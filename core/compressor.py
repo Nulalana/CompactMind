@@ -15,6 +15,7 @@ class Compressor:
         compressor_instance = method_class(params)
         
         print("Executing compression...")
-        compressed_model = compressor_instance.apply(model)
+        # 修复：将 config 中的 params 传递给 apply 方法
+        compressed_model = compressor_instance.apply(model, **params)
         
         return compressed_model

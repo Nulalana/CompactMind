@@ -99,13 +99,22 @@ class SearchEngine:
         """
         评估单个候选配置。
         """
-        # 深拷贝模型以防修改原模型
-        model_copy = copy.deepcopy(model)
+        # 深拷贝模型会引发 OOM，改用 state_dict 备份恢复策略
+        # 1. 将当前状态备份到 CPU 以节省显存
+        original_state = {k: v.detach().cpu() for k, v in model.state_dict().items()}
         
         compressor = Compressor()
-        compressed_model = compressor.run(model_copy, config)
-        
-        if self.evaluator:
-            return self.evaluator.evaluate_perplexity(compressed_model)
-        else:
-            return 0.0
+        try:
+            # 2. 就地执行压缩（注意：compressor 需要支持就地修改）
+            compressed_model = compressor.run(model, config)
+            
+            if self.evaluator:
+                return self.evaluator.evaluate_perplexity(compressed_model)
+            else:
+                return 0.0
+        except Exception as e:
+            print(f"Evaluation failed for {config}: {e}")
+            return float('inf')
+        finally:
+            # 3. 恢复原始权重，确保不影响后续搜索
+            model.load_state_dict(original_state)
