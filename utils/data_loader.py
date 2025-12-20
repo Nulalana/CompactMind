@@ -2,7 +2,7 @@ import os
 import torch
 from transformers import AutoTokenizer, PreTrainedTokenizerBase
 
-def get_calib_dataset(data_name="wikitext2", tokenizer_name="gpt2", n_samples=128, seq_len=2048, tokenizer_obj=None):
+def get_calib_dataset(data_name="wikitext2", tokenizer_name="gpt2", n_samples=128, seq_len=2048, tokenizer_obj=None, data_path=None):
     """
     加载用于校准或评估的数据集。优先读取本地 data/wikitext2/test.txt。
     """
@@ -20,15 +20,13 @@ def get_calib_dataset(data_name="wikitext2", tokenizer_name="gpt2", n_samples=12
     dataset = []
     
     if data_name == "wikitext2":
-        # 2. 尝试读取本地文件
-        local_path = "./data/wikitext2/test.txt"
+        local_path = data_path if data_path is not None else "./data/wikitext2/test.txt"
         
         if os.path.exists(local_path):
             print(f"Found local dataset at: {local_path}")
             with open(local_path, 'r', encoding='utf-8') as f:
                 text_data = f.read()
         else:
-            # 本地没有，提示用户
             raise FileNotFoundError(
                 f"Dataset not found at {local_path}.\n"
                 f"Please run 'python scripts/download_data.py' to download it first."

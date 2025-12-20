@@ -34,10 +34,11 @@ def parse_args():
     
     default_model_path = os.path.abspath("./models/Llama-2-7b-hf")
     
-    parser.add_argument("--model", type=str, default=default_model_path, help="模型名称或本地路径")
+    parser.add_argument("--model_path", type=str, default=default_model_path, help="模型名称或本地路径")
     parser.add_argument("--strategy", type=str, default="grid", choices=["grid", "random"], help="搜索策略")
     parser.add_argument("--target_ratio", type=float, default=0.5, help="目标压缩比 (0.0-1.0)")
     parser.add_argument("--data_samples", type=int, default=10, help="校准数据样本数量")
+    parser.add_argument("--data_path", type=str, default=None, help="外部数据集路径（如 wikitext2 的 test.txt）")
     
     # 修改: 显式支持 --cpu 和 --gpu，且默认使用 cpu (除非有 gpu 且没指定 cpu)
     # 为了实现“默认 CPU”但又允许“自动检测”，我们使用互斥组
@@ -120,7 +121,7 @@ def save_results(args, original_ppl, final_ppl, best_config):
     
     report = {
         "timestamp": timestamp,
-        "model": args.model,
+        "model_path": args.model_path,
         "strategy": args.strategy,
         "target_ratio": args.target_ratio,
         "data_samples": args.data_samples,
@@ -185,15 +186,15 @@ def main():
     print(f"Using Device: {device}")
     
     # 1. 加载模型 (严格本地模式)
-    model = load_model(args.model, device)
+    model = load_model(args.model_path, device)
     model.to(device)
 
     # 1.5 加载 Tokenizer (严格本地模式)
-    print(f"Loading tokenizer from: {args.model}")
+    print(f"Loading tokenizer from: {args.model_path}")
     try:
-        tokenizer = AutoTokenizer.from_pretrained(args.model, trust_remote_code=True, local_files_only=True)
+        tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, local_files_only=True)
     except Exception as e:
-        print(f"\n❌ Failed to load local tokenizer from {args.model}")
+        print(f"\n❌ Failed to load local tokenizer from {args.model_path}")
         print(f"Error: {e}")
         sys.exit(1)
 
@@ -204,7 +205,8 @@ def main():
             data_name="wikitext2", 
             tokenizer_name=None, 
             n_samples=args.data_samples,
-            tokenizer_obj=tokenizer
+            tokenizer_obj=tokenizer,
+            data_path=args.data_path
         )
     except FileNotFoundError as e:
         print(f"\n❌ CRITICAL ERROR: {e}")
