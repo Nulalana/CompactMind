@@ -119,6 +119,9 @@ def save_results(args, original_ppl, final_ppl, best_config):
     report_filename = "report.json"
     report_path = os.path.join(run_dir, report_filename)
     
+    # 提取搜索历史（如果有）
+    search_history = best_config.pop("search_history", []) if best_config else []
+    
     report = {
         "timestamp": timestamp,
         "model_path": args.model_path,
@@ -128,7 +131,8 @@ def save_results(args, original_ppl, final_ppl, best_config):
         "original_ppl": original_ppl,
         "final_ppl": final_ppl,
         "ppl_change": final_ppl - original_ppl,
-        "best_config": best_config
+        "best_config": best_config,
+        "search_history": search_history # 新增：保存所有搜索记录
     }
     
     try:
@@ -138,17 +142,86 @@ def save_results(args, original_ppl, final_ppl, best_config):
     except Exception as e:
         print(f"❌ Failed to save JSON report: {e}")
 
-    # 3. 生成可视化图表
+    # 3. 生成搜索历史 CSV 报告 (可选，方便分析)
+    if search_history:
+        try:
+            csv_path = os.path.join(run_dir, "search_history.csv")
+            with open(csv_path, 'w', encoding='utf-8') as f:
+                # 写入表头
+                f.write("Type,Config,Ratio,PPL\n")
+                for item in search_history:
+                    # 将 config 转换为字符串以适应 CSV
+                    config_str = json.dumps(item["config"], ensure_ascii=False).replace('"', '""')
+                    line = f"{item['type']},\"{config_str}\",{item['ratio']:.4f},{item['ppl']:.4f}\n"
+                    f.write(line)
+            print(f"✅ Search History CSV saved to: {csv_path}")
+        except Exception as e:
+            print(f"❌ Failed to save CSV history: {e}")
+
+    # 4. 生成可视化图表
     if HAS_MATPLOTLIB:
         plot_path = os.path.join(run_dir, "performance_analysis.png")
         try:
             generate_performance_plot(original_ppl, final_ppl, best_config, plot_path)
             print(f"✅ Visualization saved to: {plot_path}")
+            
+            # 额外：生成搜索历史散点图 (Pareto Frontier)
+            if search_history:
+                history_plot_path = os.path.join(run_dir, "search_space_analysis.png")
+                generate_search_history_plot(search_history, original_ppl, target_ratio=args.target_ratio, save_path=history_plot_path)
+                print(f"✅ Search Space Visualization saved to: {history_plot_path}")
+                
         except Exception as e:
             print(f"❌ Failed to generate plot: {e}")
     else:
         print("\n⚠️ Matplotlib not installed. Skipping visualization.")
         print("Tip: Run `pip install matplotlib` to enable charts.")
+
+def generate_search_history_plot(history, original_ppl, target_ratio, save_path):
+    """
+    生成搜索空间分析图：压缩比 vs PPL
+    """
+    plt.figure(figsize=(12, 8))
+    
+    ratios = [h['ratio'] for h in history]
+    ppls = [h['ppl'] for h in history]
+    types = [h['type'] for h in history]
+    
+    # 分类绘制
+    single_indices = [i for i, t in enumerate(types) if t == 'single']
+    pipeline_indices = [i for i, t in enumerate(types) if t == 'pipeline']
+    
+    if single_indices:
+        plt.scatter([ratios[i] for i in single_indices], [ppls[i] for i in single_indices], 
+                   c='blue', label='Single Method', alpha=0.7, s=100, marker='o')
+        
+    if pipeline_indices:
+        plt.scatter([ratios[i] for i in pipeline_indices], [ppls[i] for i in pipeline_indices], 
+                   c='red', label='Pipeline Method', alpha=0.7, s=100, marker='^')
+    
+    # 绘制原始基准线
+    plt.axhline(y=original_ppl, color='green', linestyle='--', label='Original PPL')
+    plt.text(min(ratios) if ratios else 0.5, original_ppl, 'Original PPL', va='bottom', color='green')
+    
+    # 绘制目标压缩比线
+    plt.axvline(x=target_ratio, color='gray', linestyle='--', label='Target Ratio Limit')
+    
+    plt.xlabel('Estimated Compression Ratio (Lower is More Compressed)')
+    plt.ylabel('Perplexity (Lower is Better)')
+    plt.title('Search Space Analysis: Compression Ratio vs PPL')
+    plt.legend()
+    plt.grid(True, alpha=0.3)
+    
+    # 标注最佳点
+    best_idx = ppls.index(min(ppls))
+    best_x = ratios[best_idx]
+    best_y = ppls[best_idx]
+    plt.annotate('Best Config', xy=(best_x, best_y), xytext=(best_x, best_y*1.1),
+                arrowprops=dict(facecolor='black', shrink=0.05))
+    
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300)
+    plt.close()
 
 def load_model(model_name_or_path, device):
     print(f"Loading model from: {model_name_or_path}")

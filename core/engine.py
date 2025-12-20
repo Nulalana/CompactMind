@@ -27,7 +27,10 @@ class SearchEngine:
         best_score = float('inf') # PPL 越低越好
         best_config = None
         
-        # 遍历所有注册的压缩方法
+        # 记录所有尝试过的组合及其结果，用于生成报告
+        search_history = []
+        
+        # 1. 单方法搜索
         for method_name in self.available_methods:
             method_class = get_method(method_name)
             temp_instance = method_class({}) 
@@ -36,37 +39,127 @@ class SearchEngine:
             search_space = info.get("search_space", {})
             print(f"Searching method: {method_name}, Space: {search_space}")
             
-            # 生成网格搜索的所有参数组合
             param_names = list(search_space.keys())
             param_values = list(search_space.values())
             
-            # itertools.product 生成笛卡尔积
             for combination in itertools.product(*param_values):
                 current_params = dict(zip(param_names, combination))
-                
-                # 构造当前配置
                 config = {
                     "method": method_name,
                     "params": current_params
                 }
                 
-                # 1. [关键步骤] 预估压缩比
                 estimated_ratio = self._estimate_compression_ratio(method_name, current_params)
                 
-                # 2. [筛选] 检查是否满足用户目标
                 if estimated_ratio > target_ratio:
                     print(f"  [Skip] {config['method']} {config['params']} (Ratio {estimated_ratio:.2f} > {target_ratio})")
                     continue
                 
-                # 3. [评估] 只有满足条件的才跑 PPL
                 score = self._evaluate_candidate(model, config)
                 print(f"  [Eval] {config['method']} {config['params']} (Ratio {estimated_ratio:.2f}) -> PPL: {score:.4f}")
+                
+                # 记录结果
+                search_history.append({
+                    "config": config,
+                    "ratio": estimated_ratio,
+                    "ppl": score,
+                    "type": "single"
+                })
                 
                 if score < best_score:
                     best_score = score
                     best_config = config
+
+        # 2. 混合方法搜索 (Pipeline Search)
+        # 组合策略：尝试 [量化 -> 剪枝] 和 [剪枝 -> 量化] 的所有可能组合
+        # 限制：仅组合两种不同类型的方法，避免搜索空间爆炸
+        print("\n--- Starting Pipeline Search (Hybrid Methods) ---")
+        
+        methods_info = {}
+        for m in self.available_methods:
+            cls = get_method(m)
+            inst = cls({})
+            methods_info[m] = inst.get_info()
+            
+        quant_methods = [m for m in self.available_methods if methods_info[m].get("type") == "quantization"]
+        prune_methods = [m for m in self.available_methods if methods_info[m].get("type") == "pruning"]
+        
+        # 生成所有可能的 pipeline 组合
+        # 顺序 1: 量化 -> 剪枝
+        pipelines_to_search = []
+        for q in quant_methods:
+            for p in prune_methods:
+                pipelines_to_search.append([q, p]) # Quant -> Prune
+                pipelines_to_search.append([p, q]) # Prune -> Quant
+        
+        for p_methods in pipelines_to_search:
+            # 构建该 pipeline 的参数空间笛卡尔积
+            # 例如: Quant(alpha) x Prune(sparsity)
+            
+            # 获取每个方法的参数空间
+            spaces = [methods_info[m].get("search_space", {}) for m in p_methods]
+            param_names_list = [list(s.keys()) for s in spaces]
+            param_values_list = [list(s.values()) for s in spaces]
+            
+            # 生成每一步的参数组合
+            # step1_combos: [params1_a, params1_b, ...]
+            # step2_combos: [params2_a, params2_b, ...]
+            step_combos_list = []
+            for i in range(len(p_methods)):
+                if not param_values_list[i]: # 无参数方法 (如 fp16)
+                    step_combos_list.append([{}])
+                else:
+                    # 生成该步骤的所有参数组合
+                    combos = []
+                    for val_combo in itertools.product(*param_values_list[i]):
+                        combos.append(dict(zip(param_names_list[i], val_combo)))
+                    step_combos_list.append(combos)
+            
+            # 生成整个 pipeline 的参数组合 (Step 1 x Step 2)
+            for pipeline_params in itertools.product(*step_combos_list):
+                # pipeline_params 是一个元组，包含每一步的参数字典 ({'alpha':...}, {'sparsity':...})
+                
+                # 构造 pipeline 配置
+                current_pipeline = []
+                total_ratio = 1.0
+                
+                for i, method_name in enumerate(p_methods):
+                    params = pipeline_params[i]
+                    current_pipeline.append({
+                        "method": method_name,
+                        "params": params
+                    })
+                    total_ratio *= self._estimate_compression_ratio(method_name, params)
+                
+                pipeline_config = {"pipeline": current_pipeline}
+                pipeline_name = "+".join(p_methods)
+                pipeline_param_str = str(pipeline_params)
+                
+                # 筛选
+                if total_ratio > target_ratio:
+                    print(f"  [Skip] Pipeline {pipeline_name} {pipeline_param_str} (Ratio {total_ratio:.2f} > {target_ratio})")
+                    continue
+                
+                # 评估
+                score = self._evaluate_candidate(model, pipeline_config)
+                print(f"  [Eval] Pipeline {pipeline_name} {pipeline_param_str} (Ratio {total_ratio:.2f}) -> PPL: {score:.4f}")
+                
+                # 记录结果
+                search_history.append({
+                    "config": pipeline_config,
+                    "ratio": total_ratio,
+                    "ppl": score,
+                    "type": "pipeline"
+                })
+                
+                if score < best_score:
+                    best_score = score
+                    best_config = pipeline_config
         
         print(f"Search completed. Best Score: {best_score:.4f}")
+        # 将历史记录附加到 best_config 中返回，以便上层保存到报告
+        if best_config:
+            best_config["search_history"] = search_history
         return best_config
 
     def _estimate_compression_ratio(self, method_name: str, params: Dict[str, Any]) -> float:
