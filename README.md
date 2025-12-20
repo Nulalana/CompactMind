@@ -1,21 +1,23 @@
-# AutoLLM-Compressor
+# AutoLLM-Compressor (CompactMind)
 
 一个可插拔、可扩展的完全本地化自动化大模型压缩框架。核心设计为“注册中心 + 搜索引擎 + 执行器 + 评估器”，支持 Llama-2 等大模型在本地环境下的自动压缩与评估。
 
 ## ✨ 核心特性
 
 *   **完全本地化**: 支持加载本地模型（如 Llama-2）和本地数据集（WikiText-2），无需联网，安全稳定。
+*   **混合压缩搜索 (Pipeline Search)**: 自动搜索单一方法及组合方法（如“量化+剪枝”），寻找帕累托最优解。
 *   **插件化架构**: 压缩算法（剪枝、量化）通过装饰器注册，零侵入扩展。
 *   **自动搜索**: 内置 Grid Search 自动寻找最优压缩参数组合（Sparsity, Bits 等）。
 *   **真实评估**: 基于 PPL (Perplexity) 的闭环评估，拒绝随机数据糊弄。
+*   **可视化报告**: 自动生成压缩比 vs PPL 的散点图，直观展示不同方法的性能前沿。
 
 ## 📂 项目结构详解
 
 ```text
 AutoLLM-Compressor/
 ├── core/                       # [核心引擎]
-│   ├── compressor.py           # 压缩执行器：负责调用具体的压缩算法修改模型
-│   ├── engine.py               # 搜索引擎：实现 Grid Search 等策略，寻找最佳配置
+│   ├── compressor.py           # 压缩执行器：支持单方法和 Pipeline 组合执行
+│   ├── engine.py               # 搜索引擎：实现 Grid Search 及混合管线搜索
 │   ├── evaluator.py            # 评估器：计算模型的 PPL (困惑度)
 │   └── __init__.py
 │
@@ -25,7 +27,7 @@ AutoLLM-Compressor/
 │   │   ├── l2.py               # L2 结构化剪枝 (Structured Pruning)
 │   │   └── __init__.py
 │   ├── quantization/           # 量化算法
-│   │   ├── fp16.py             # FP16 半精度量化 (显存减半)
+│   │   ├── fp16.py             # FP16 半精度量化
 │   │   ├── int8_sq.py          # INT8-SQ 模拟量化 (SmoothQuant 思想)
 │   │   └── __init__.py
 │   ├── base.py                 # 算法基类，定义标准接口
@@ -33,23 +35,19 @@ AutoLLM-Compressor/
 │   └── __init__.py
 │
 ├── utils/                      # [工具类]
-│   ├── data_loader.py          # 数据加载器：负责读取本地 WikiText-2 数据
+│   ├── data_loader.py          # 数据加载器
 │   └── __init__.py
 │
-├── models/                     # [模型存放区]
-│   └── Llama-2-7b-hf/          # (需自行下载) Llama-2 模型文件
-│
-├── data/                       # [数据存放区]
-│   └── wikitext2/              # (需自行下载) WikiText-2 测试集
-│       └── test.txt
-│
 ├── scripts/                    # [辅助脚本]
-│   ├── download_model.py       # 从 HuggingFace 下载模型的脚本
-│   ├── download_from_modelscope.py # 从 ModelScope (魔塔) 下载模型的脚本
-│   └── download_data.py        # 下载 WikiText-2 数据集的脚本
+│   ├── download_model.py       # 下载模型
+│   ├── download_from_modelscope.py # 从 ModelScope 下载
+│   └── download_data.py        # 下载数据集
 │
 ├── results/                    # [结果输出]
-│   └── report_*.json           # 每次运行的详细实验报告
+│   └── run_YYYYMMDD/           # 独立运行目录
+│       ├── report.json         # 详细实验报告
+│       ├── search_history.csv  # 搜索过程数据
+│       └── search_space_analysis.png # 搜索空间可视化图
 │
 ├── main.py                     # [主入口] 项目启动文件
 └── README.md                   # 项目文档
@@ -60,50 +58,61 @@ AutoLLM-Compressor/
 ### 1. 环境准备
 ```bash
 # 安装依赖
-pip install torch transformers datasets modelscope
+pip install torch transformers datasets modelscope matplotlib
 ```
 
 ### 2. 准备模型与数据
-本项目设计为**离线运行**，因此首次使用前需要下载资源：
-
 *   **下载数据**:
     ```bash
     python scripts/download_data.py
     ```
-    这会将 WikiText-2 下载到 `data/wikitext2/test.txt`。
-
-*   **下载模型 (以 Llama-2 为例)**:
+*   **下载模型**:
     ```bash
-    # 推荐：使用魔塔社区下载 (速度快，无需权限)
+    # 推荐：使用魔塔社区下载
     python scripts/download_from_modelscope.py
     ```
-    这会将模型下载到 `models/Llama-2-7b-hf`。
 
 ### 3. 运行项目
-资源准备好后，直接运行主程序即可：
+推荐使用 GPU 运行，并指定本地模型与数据路径：
 
 ```bash
-python main.py
+# 示例：使用 GPU 运行，压缩比目标 0.8
+python main.py --gpu \
+  --model_path /path/to/Llama-2-7b-hf \
+  --data_path /path/to/wikitext2/test.txt \
+  --target_ratio 0.8
 ```
 
 程序会自动：
-1.  加载本地 Llama-2 模型。
-2.  加载本地 WikiText-2 数据。
-3.  遍历所有压缩算法（剪枝、量化）。
-4.  评估每种配置的 PPL。
-5.  输出最佳配置并保存报告到 `results/` 目录。
+1.  加载模型与数据。
+2.  **单方法搜索**: 遍历所有单一方法（如 INT8, L2剪枝）及其参数。
+3.  **混合管线搜索**: 遍历所有两步组合（如“INT8 + L2剪枝”）。
+4.  **评估与择优**: 筛选出满足压缩比（如 0.8）且 PPL 最低的配置。
+5.  输出最佳配置，并生成 `search_space_analysis.png` 图表。
 
-### 4. 自定义参数
-你也可以通过命令行参数调整实验设置：
+### 4. 命令行参数详解
 
 ```bash
-python main.py --strategy grid --sparsity 0.5 --data_samples 20
+python main.py [options]
 ```
 
-*   `--model`: 指定模型路径 (默认 `./models/Llama-2-7b-hf`)
-*   `--strategy`: 搜索策略 (`grid` 或 `random`)
-*   `--sparsity`: 目标稀疏度约束
-*   `--data_samples`: 用于校准/评估的数据样本数量 (建议 10-20 用于快速验证)
+*   `--model_path`: 本地模型路径 (必须包含 config.json 等文件)
+*   `--data_path`: 外部数据集路径 (如 wikitext2 的 test.txt)
+*   `--target_ratio`: 目标压缩比 (0.0-1.0)，默认 0.5。程序会跳过压缩率不足的方案。
+*   `--gpu`: 强制使用 GPU (推荐)。
+*   `--cpu`: 强制使用 CPU (极慢，仅供调试)。
+*   `--data_samples`: 校准样本数量 (默认 10)，显存紧张时可调小。
+*   `--strategy`: 搜索策略，默认为 `grid` (网格搜索)。
+
+## 📊 结果分析
+
+运行结束后，检查 `results/run_xxx/` 目录：
+*   **search_space_analysis.png**: 散点图。横轴为压缩比，纵轴为 PPL。
+    *   🔵 蓝色点：单一方法
+    *   🔺 红色点：混合方法 (Pipeline)
+    *   你可以直观看到混合方法是否突破了单一方法的性能边界（帕累托前沿）。
+*   **search_history.csv**: 所有尝试过的配置数据，可用于 Excel 分析。
+*   **report.json**: 完整的机器可读报告。
 
 ## 🛠️ 如何导入新的压缩方法？
 
@@ -144,7 +153,7 @@ class MyCustomPruning(BaseCompressionMethod):
 ```
 
 ### 第三步：激活
-确保你的新文件被系统导入。你可以修改 `main.py` 在开头导入它，或者（推荐）在 `methods/pruning/__init__.py` 中添加一行导入：
+在 `methods/pruning/__init__.py` 中添加一行导入：
 
 ```python
 # methods/pruning/__init__.py
@@ -152,7 +161,7 @@ from .random import RandomPruning
 from .my_pruning import MyCustomPruning  # <--- 新增这行
 ```
 
-**完成！** 下次运行 `python main.py` 时，系统会自动发现并评估你的新算法。
+**完成！** 下次运行 `python main.py` 时，系统会自动将你的新算法加入单方法搜索和混合管线搜索中。
 
 ---
 维护者：AutoLLM-Compressor 项目组
