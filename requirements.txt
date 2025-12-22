@@ -5,3 +5,4 @@ accelerate>=0.20.0
 scipy
 numpy
 tqdm
+optuna

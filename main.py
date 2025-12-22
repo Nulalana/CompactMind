@@ -35,7 +35,8 @@ def parse_args():
     default_model_path = os.path.abspath("./models/Llama-2-7b-hf")
     
     parser.add_argument("--model_path", type=str, default=default_model_path, help="模型名称或本地路径")
-    parser.add_argument("--strategy", type=str, default="grid", choices=["grid", "random"], help="搜索策略")
+    parser.add_argument("--strategy", type=str, default="bayesian", choices=["grid", "random", "bayesian"], help="搜索策略 (默认: bayesian)")
+    parser.add_argument("--n_trials", type=int, default=30, help="贝叶斯搜索的尝试次数 (默认: 30)")
     parser.add_argument("--target_ratio", type=float, default=0.5, help="目标压缩比 (0.0-1.0)")
     parser.add_argument("--data_samples", type=int, default=10, help="校准数据样本数量")
     parser.add_argument("--data_path", type=str, default=None, help="外部数据集路径（如 wikitext2 的 test.txt）")
@@ -204,7 +205,7 @@ def generate_search_history_plot(history, original_ppl, target_ratio, save_path)
     
     # 分类绘制
     single_indices = [i for i, t in enumerate(types) if t == 'single']
-    pipeline_indices = [i for i, t in enumerate(types) if t == 'pipeline']
+    pipeline_indices = [i for i, t in enumerate(types) if t == 'hybrid' or t == 'pipeline']
     
     if single_indices:
         plt.scatter([ratios[i] for i in single_indices], [ppls[i] for i in single_indices], 
@@ -212,7 +213,7 @@ def generate_search_history_plot(history, original_ppl, target_ratio, save_path)
         
     if pipeline_indices:
         plt.scatter([ratios[i] for i in pipeline_indices], [ppls[i] for i in pipeline_indices], 
-                   c='red', label='Pipeline Method', alpha=0.7, s=100, marker='^')
+                   c='red', label='Hybrid Method', alpha=0.7, s=100, marker='^')
     
     # 绘制原始基准线
     plt.axhline(y=original_ppl, color='green', linestyle='--', label='Original PPL')
@@ -324,7 +325,10 @@ def main():
     print("\n--- Starting Automatic Search ---")
     
     # 变更: 传递 target_ratio 约束
-    constraints = {"target_ratio": args.target_ratio}
+    constraints = {
+        "target_ratio": args.target_ratio,
+        "n_trials": args.n_trials
+    }
     best_config = engine.search(model, constraints)
     
     print(f"\nBest Configuration Found: {best_config}")

@@ -6,6 +6,8 @@ from methods.registry import COMPRESSION_REGISTRY, get_method
 from core.compressor import Compressor
 from core.evaluator import Evaluator
 
+import optuna
+
 class SearchEngine:
     """
     搜索引擎核心：负责在搜索空间中寻找最佳压缩配置。
@@ -24,6 +26,123 @@ class SearchEngine:
         target_ratio = constraints.get("target_ratio", 1.0)
         print(f"Target Compression Ratio: <= {target_ratio}")
         
+        if self.search_strategy == "bayesian":
+            return self._search_bayesian(model, constraints)
+
+        # 默认为 grid search (保留原逻辑作为 fallback)
+        return self._search_grid(model, constraints)
+
+    def _search_bayesian(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        target_ratio = constraints.get("target_ratio", 1.0)
+        n_trials = constraints.get("n_trials", 30)
+        
+        # 准备元数据
+        methods_info = {}
+        for m in self.available_methods:
+            cls = get_method(m)
+            inst = cls({})
+            methods_info[m] = inst.get_info()
+            
+        quant_methods = [m for m in self.available_methods if methods_info[m].get("type") == "quantization"]
+        prune_methods = [m for m in self.available_methods if methods_info[m].get("type") == "pruning"]
+        
+        search_history = []
+        best_config_container = {"config": None, "score": float('inf')}
+
+        def objective(trial):
+            # 1. 决定是单方法还是混合方法
+            mode = trial.suggest_categorical("mode", ["single", "hybrid"])
+            
+            config = {}
+            estimated_ratio = 1.0
+            
+            if mode == "single":
+                method_name = trial.suggest_categorical("method", self.available_methods)
+                params = {}
+                search_space = methods_info[method_name].get("search_space", {})
+                
+                for p_name, p_vals in search_space.items():
+                    # 目前所有参数空间都是 list，映射为 categorical
+                    params[p_name] = trial.suggest_categorical(f"{method_name}_{p_name}", p_vals)
+                
+                config = {"method": method_name, "params": params}
+                estimated_ratio = self._estimate_compression_ratio(method_name, params)
+                
+            else: # hybrid
+                # 简化逻辑：尝试 Quant -> Prune 或 Prune -> Quant
+                # 先选两个具体方法
+                q_method = trial.suggest_categorical("hybrid_q_method", quant_methods)
+                p_method = trial.suggest_categorical("hybrid_p_method", prune_methods)
+                
+                # 决定顺序
+                order = trial.suggest_categorical("hybrid_order", ["qp", "pq"])
+                
+                # 采样参数
+                q_params = {}
+                q_space = methods_info[q_method].get("search_space", {})
+                for p_name, p_vals in q_space.items():
+                    q_params[p_name] = trial.suggest_categorical(f"hybrid_{q_method}_{p_name}", p_vals)
+                
+                p_params = {}
+                p_space = methods_info[p_method].get("search_space", {})
+                for p_name, p_vals in p_space.items():
+                    p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
+                
+                # 组装 pipeline (内部实现仍用 pipeline 列表结构)
+                if order == "qp":
+                    pipeline_list = [
+                        {"method": q_method, "params": q_params},
+                        {"method": p_method, "params": p_params}
+                    ]
+                else:
+                    pipeline_list = [
+                        {"method": p_method, "params": p_params},
+                        {"method": q_method, "params": q_params}
+                    ]
+                
+                config = {"pipeline": pipeline_list}
+                r1 = self._estimate_compression_ratio(q_method, q_params)
+                r2 = self._estimate_compression_ratio(p_method, p_params)
+                estimated_ratio = r1 * r2
+
+            # 检查约束
+            if estimated_ratio > target_ratio:
+                return float('inf')
+
+            # 评估 PPL
+            score = self._evaluate_candidate(model, config)
+            
+            # 记录
+            search_history.append({
+                "config": config,
+                "ratio": estimated_ratio,
+                "ppl": score,
+                "type": mode
+            })
+            
+            if score < best_config_container["score"]:
+                best_config_container["score"] = score
+                best_config_container["config"] = config
+                
+            return score
+
+        # 创建 Study
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        study = optuna.create_study(direction="minimize")
+        print(f"Starting Bayesian Optimization with {n_trials} trials...")
+        study.optimize(objective, n_trials=n_trials)
+        
+        print(f"Search completed. Best Score: {study.best_value:.4f}")
+        
+        best_config = best_config_container["config"]
+        if best_config:
+            best_config["search_history"] = search_history
+            
+        return best_config
+
+    def _search_grid(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        target_ratio = constraints.get("target_ratio", 1.0)
+
         best_score = float('inf') # PPL 越低越好
         best_config = None
         

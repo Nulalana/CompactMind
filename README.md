@@ -5,7 +5,7 @@
 ## ✨ 核心特性
 
 *   **完全本地化**: 支持加载本地模型（如 Llama-2）和本地数据集（WikiText-2），无需联网，安全稳定。
-*   **混合压缩搜索 (Pipeline Search)**: 自动搜索单一方法及组合方法（如“量化+剪枝”），寻找帕累托最优解。
+*   **混合方法搜索 (Hybrid Search)**: 自动搜索单一方法及组合方法（如“量化+剪枝”），寻找帕累托最优解。
 *   **插件化架构**: 压缩算法（剪枝、量化）通过装饰器注册，零侵入扩展。
 *   **自动搜索**: 内置 Grid Search 自动寻找最优压缩参数组合（Sparsity, Bits 等）。
 *   **真实评估**: 基于 PPL (Perplexity) 的闭环评估，拒绝随机数据糊弄。
@@ -16,8 +16,8 @@
 ```text
 AutoLLM-Compressor/
 ├── core/                       # [核心引擎]
-│   ├── compressor.py           # 压缩执行器：支持单方法和 Pipeline 组合执行
-│   ├── engine.py               # 搜索引擎：实现 Grid Search 及混合管线搜索
+│   ├── compressor.py           # 压缩执行器：支持单方法和 Hybrid 组合执行
+│   ├── engine.py               # 搜索引擎：实现 Grid Search 及混合方法搜索
 │   ├── evaluator.py            # 评估器：计算模型的 PPL (困惑度)
 │   └── __init__.py
 │
@@ -86,7 +86,7 @@ python main.py --gpu \
 程序会自动：
 1.  加载模型与数据。
 2.  **单方法搜索**: 遍历所有单一方法（如 INT8, L2剪枝）及其参数。
-3.  **混合管线搜索**: 遍历所有两步组合（如“INT8 + L2剪枝”）。
+3.  **混合方法搜索**: 遍历所有两步组合（如“INT8 + L2剪枝”）。
 4.  **评估与择优**: 筛选出满足压缩比（如 0.8）且 PPL 最低的配置。
 5.  输出最佳配置，并生成 `search_space_analysis.png` 图表。
 
@@ -109,7 +109,7 @@ python main.py [options]
 运行结束后，检查 `results/run_xxx/` 目录：
 *   **search_space_analysis.png**: 散点图。横轴为压缩比，纵轴为 PPL。
     *   🔵 蓝色点：单一方法
-    *   🔺 红色点：混合方法 (Pipeline)
+    *   🔺 红色点：混合方法 (Hybrid)
     *   你可以直观看到混合方法是否突破了单一方法的性能边界（帕累托前沿）。
 *   **search_history.csv**: 所有尝试过的配置数据，可用于 Excel 分析。
 *   **report.json**: 完整的机器可读报告。
@@ -161,7 +161,7 @@ from .random import RandomPruning
 from .my_pruning import MyCustomPruning  # <--- 新增这行
 ```
 
-**完成！** 下次运行 `python main.py` 时，系统会自动将你的新算法加入单方法搜索和混合管线搜索中。
+**完成！** 下次运行 `python main.py` 时，系统会自动将你的新算法加入单方法搜索和混合方法搜索中。
 
 ---
 维护者：AutoLLM-Compressor 项目组
