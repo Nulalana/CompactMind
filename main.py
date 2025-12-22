@@ -121,7 +121,19 @@ def generate_performance_plot(original_ppl, final_ppl, best_config, save_path):
                 ha='center', va='bottom', fontsize=12)
     
     # 添加标题和标签
-    method_name = best_config['method'] if best_config else "None"
+    # 修复 KeyError: 'method' - best_config 可能包含 'pipeline' 而不是 'method'
+    if best_config:
+        if 'method' in best_config:
+            method_name = best_config['method']
+        elif 'pipeline' in best_config:
+            # 简化显示 pipeline 名称
+            methods = [step['method'] for step in best_config['pipeline']]
+            method_name = " + ".join(methods)
+        else:
+            method_name = "Unknown"
+    else:
+        method_name = "None"
+
     plt.title(f'Model Compression Performance\nMethod: {method_name}', fontsize=14)
     plt.ylabel('Perplexity (Lower is Better)', fontsize=12)
     plt.grid(axis='y', linestyle='--', alpha=0.7)
