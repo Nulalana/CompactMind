@@ -35,7 +35,7 @@ class SearchEngine:
     def _search_bayesian(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
         target_ratio = constraints.get("target_ratio", 1.0)
         n_trials = constraints.get("n_trials", 30)
-        force_retrain = constraints.get("retrain", True)
+        user_enable_retrain = constraints.get("enable_retrain", True) # 获取用户开关
         
         # 准备元数据
         methods_info = {}
@@ -95,13 +95,9 @@ class SearchEngine:
                 enable_retrain = False
                 retrain_config = None
                 
-                if retrain_methods:
-                    # 策略升级: 使用命令行参数控制是否开启
-                    # 如果 force_retrain 为 True，则总是开启；否则让 Optuna 决定
-                    if force_retrain:
-                        enable_retrain = True
-                    else:
-                        enable_retrain = trial.suggest_categorical("enable_retrain", [True, False])
+                if retrain_methods and user_enable_retrain:
+                    # 简单策略：让 Optuna 决定是否开启
+                    enable_retrain = trial.suggest_categorical("enable_retrain", [True, False])
                     
                     if enable_retrain:
                         r_method = retrain_methods[0] # 默认取第一个 (finetuning)
@@ -116,7 +112,7 @@ class SearchEngine:
                 r_q = self._estimate_compression_ratio(q_method, q_params)
                 estimated_ratio = r_p * r_q
                 
-                # 约束检查 (用户请求移除: 总是允许评估，以便在CSV中看到所有点)
+                # 约束检查 (仅记录日志，不再提前跳过，为了保留所有记录)
                 # if estimated_ratio > target_ratio * 1.05: # 稍微放宽
                 #      return float('inf')
                 
@@ -128,7 +124,11 @@ class SearchEngine:
                 
                 config = {"pipeline": pipeline_list}
 
-            # 评估 PPL
+            # 检查约束 (单方法模式也取消约束检查，以保留所有记录)
+            # if estimated_ratio > target_ratio:
+            #     # 稍微放宽一点点，避免浮点误差，但总体要严格
+            #     if estimated_ratio > target_ratio * 1.05:
+            #         return float('inf')
 
             # 评估 PPL
             score = self._evaluate_candidate(model, config)

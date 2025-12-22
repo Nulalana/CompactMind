@@ -74,7 +74,9 @@ def parse_args():
     parser.add_argument("--data_samples", type=int, default=10, help="校准数据样本数量")
     parser.add_argument("--data_path", type=str, default=None, help="外部数据集路径（如 wikitext2 的 test.txt）")
     parser.add_argument("--save_to_local", action="store_true", help="是否保存压缩后的模型")
-    parser.add_argument("--retrain", type=lambda x: (str(x).lower() == 'true'), default=True, help="是否开启再训练 (True/False), 默认 True")
+    
+    # 新增: 控制是否在混合模式下启用再训练
+    parser.add_argument("--retrain", type=lambda x: (str(x).lower() == 'true'), default=True, help="混合模式下是否启用再训练 (True/False), 默认 True")
     
     # 修改: 显式支持 --cpu 和 --gpu，且默认使用 cpu (除非有 gpu 且没指定 cpu)
     # 为了实现“默认 CPU”但又允许“自动检测”，我们使用互斥组
@@ -514,7 +516,7 @@ def main():
     constraints = {
         "target_ratio": args.target_ratio,
         "n_trials": args.n_trials,
-        "retrain": args.retrain
+        "enable_retrain": args.retrain # 传递 retrain 开关
     }
     best_config = engine.search(model, constraints)
     
