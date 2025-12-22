@@ -5,11 +5,12 @@
 ## ✨ 核心特性
 
 *   **完全本地化**: 支持加载本地模型（如 Llama-2）和本地数据集（WikiText-2），无需联网，安全稳定。
-*   **混合方法搜索 (Hybrid Search)**: 自动搜索单一方法及组合方法（如“量化+剪枝”），寻找帕累托最优解。
+*   **混合方法搜索 (Hybrid Search)**: 自动搜索单一方法及组合方法（如“量化+剪枝”），并智能过滤无效组合，寻找帕累托最优解。
+*   **贝叶斯优化 (Bayesian Optimization)**: 集成 Optuna 框架，支持高效的自动化参数搜索与剪枝。
 *   **插件化架构**: 压缩算法（剪枝、量化）通过装饰器注册，零侵入扩展。
-*   **自动搜索**: 内置 Grid Search 自动寻找最优压缩参数组合（Sparsity, Bits 等）。
 *   **真实评估**: 基于 PPL (Perplexity) 的闭环评估，拒绝随机数据糊弄。
-*   **可视化报告**: 自动生成压缩比 vs PPL 的散点图，直观展示不同方法的性能前沿。
+*   **可视化报告**: 自动生成压缩比 vs PPL 的帕累托前沿图 (Pareto Frontier)，直观展示不同方法的性能边界。
+*   **完整日志系统**: 自动记录运行日志到文件，方便复现与排查。
 
 ## 📂 项目结构详解
 
@@ -44,10 +45,13 @@ AutoLLM-Compressor/
 │   └── download_data.py        # 下载数据集
 │
 ├── results/                    # [结果输出]
-│   └── run_YYYYMMDD/           # 独立运行目录
+│   └── result_YYYYMMDD-HHMMSS/ # 独立运行目录
+│       ├── run.log             # 完整运行日志
 │       ├── report.json         # 详细实验报告
 │       ├── search_history.csv  # 搜索过程数据
-│       └── search_space_analysis.png # 搜索空间可视化图
+│       └── picture/            # 可视化图表目录
+│           ├── performance_analysis.png  # 最终性能对比图
+│           └── search_space_analysis.png # 搜索空间帕累托图
 │
 ├── main.py                     # [主入口] 项目启动文件
 └── README.md                   # 项目文档
@@ -58,7 +62,7 @@ AutoLLM-Compressor/
 ### 1. 环境准备
 ```bash
 # 安装依赖
-pip install torch transformers datasets modelscope matplotlib
+pip install torch transformers datasets modelscope matplotlib optuna
 ```
 
 ### 2. 准备模型与数据
@@ -76,19 +80,21 @@ pip install torch transformers datasets modelscope matplotlib
 推荐使用 GPU 运行，并指定本地模型与数据路径：
 
 ```bash
-# 示例：使用 GPU 运行，压缩比目标 0.8
+# 示例：使用 GPU 运行，贝叶斯搜索，尝试 30 次，目标压缩比 0.8
 python main.py --gpu \
   --model_path /path/to/Llama-2-7b-hf \
   --data_path /path/to/wikitext2/test.txt \
-  --target_ratio 0.8
+  --target_ratio 0.8 \
+  --strategy bayesian \
+  --n_trials 30
 ```
 
 程序会自动：
-1.  加载模型与数据。
-2.  **单方法搜索**: 遍历所有单一方法（如 INT8, L2剪枝）及其参数。
-3.  **混合方法搜索**: 遍历所有两步组合（如“INT8 + L2剪枝”）。
-4.  **评估与择优**: 筛选出满足压缩比（如 0.8）且 PPL 最低的配置。
-5.  输出最佳配置，并生成 `search_space_analysis.png` 图表。
+1.  **加载资源**: 加载模型与数据。
+2.  **贝叶斯搜索**: 使用 Optuna 在单方法和混合方法空间中智能采样。
+3.  **约束过滤**: 自动剪枝不满足 `target_ratio` 的组合。
+4.  **评估与择优**: 筛选出 PPL 最低的配置。
+5.  **生成报告**: 在 `results/result_...` 下生成日志、JSON 报告和可视化图片。
 
 ### 4. 命令行参数详解
 
@@ -98,21 +104,25 @@ python main.py [options]
 
 *   `--model_path`: 本地模型路径 (必须包含 config.json 等文件)
 *   `--data_path`: 外部数据集路径 (如 wikitext2 的 test.txt)
-*   `--target_ratio`: 目标压缩比 (0.0-1.0)，默认 0.5。程序会跳过压缩率不足的方案。
+*   `--target_ratio`: 目标压缩比 (0.0-1.0)，默认 0.5。
+*   `--strategy`: 搜索策略，可选 `bayesian` (默认), `grid`, `random`。
+*   `--n_trials`: 贝叶斯搜索的尝试次数，默认 30。
 *   `--gpu`: 强制使用 GPU (推荐)。
 *   `--cpu`: 强制使用 CPU (极慢，仅供调试)。
-*   `--data_samples`: 校准样本数量 (默认 10)，显存紧张时可调小。
-*   `--strategy`: 搜索策略，默认为 `grid` (网格搜索)。
+*   `--data_samples`: 校准样本数量 (默认 10)。
+*   `--save_to_local`: 是否保存最终压缩后的模型文件。
 
 ## 📊 结果分析
 
-运行结束后，检查 `results/run_xxx/` 目录：
-*   **search_space_analysis.png**: 散点图。横轴为压缩比，纵轴为 PPL。
+运行结束后，检查 `results/result_xxx/picture/` 目录：
+*   **search_space_analysis.png**: 
     *   🔵 蓝色点：单一方法
     *   🔺 红色点：混合方法 (Hybrid)
-    *   你可以直观看到混合方法是否突破了单一方法的性能边界（帕累托前沿）。
-*   **search_history.csv**: 所有尝试过的配置数据，可用于 Excel 分析。
-*   **report.json**: 完整的机器可读报告。
+    *   ⭐ 金色星：帕累托最优解
+    *   你可以直观看到混合方法是否突破了单一方法的性能边界。
+*   **performance_analysis.png**: 原始模型 vs 压缩模型的最终 PPL 对比。
+
+检查 `results/result_xxx/run.log` 查看详细的运行过程和错误信息。
 
 ## 🛠️ 如何导入新的压缩方法？
 
@@ -161,7 +171,7 @@ from .random import RandomPruning
 from .my_pruning import MyCustomPruning  # <--- 新增这行
 ```
 
-**完成！** 下次运行 `python main.py` 时，系统会自动将你的新算法加入单方法搜索和混合方法搜索中。
+**完成！** 下次运行 `python main.py` 时，系统会自动将你的新算法加入搜索空间。
 
 ---
 维护者：AutoLLM-Compressor 项目组

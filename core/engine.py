@@ -98,17 +98,14 @@ class SearchEngine:
                 
                 if "sparsity" in p_space:
                     available_sparsities = p_space["sparsity"]
-                    # 过滤掉肯定不达标的 sparsity
-                    valid_sparsities = [s for s in available_sparsities if s >= min_sparsity - 0.05] # 留一点点容错
-                    
-                    if not valid_sparsities:
-                        # 如果没有合法的，就选最大的尝试
-                        valid_sparsities = [max(available_sparsities)]
-                    
-                    selected_sparsity = trial.suggest_categorical(f"hybrid_{p_method}_sparsity", valid_sparsities)
+                    # 注意：Optuna 不允许动态更改同一参数的候选集合
+                    # 因此始终用完整候选集合采样，然后根据约束剪枝该 trial
+                    selected_sparsity = trial.suggest_categorical(f"hybrid_{p_method}_sparsity", available_sparsities)
+                    if selected_sparsity < min_sparsity:
+                        raise optuna.TrialPruned(f"sparsity {selected_sparsity} below required minimum {min_sparsity:.3f} for target_ratio")
                     p_params["sparsity"] = selected_sparsity
                     
-                    # 其他参数
+                    # 其他参数保持静态候选集合
                     for p_name, p_vals in p_space.items():
                         if p_name != "sparsity":
                             p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)

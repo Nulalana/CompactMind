@@ -15,6 +15,8 @@ try:
 except ImportError:
     HAS_MATPLOTLIB = False
 
+import logging
+
 # 依然保留 HF_ENDPOINT，以防万一未来需要扩展
 os.environ['HF_ENDPOINT'] = 'https://hf-mirror.com'
 
@@ -28,6 +30,36 @@ from methods.quantization.fp16 import FP16Quantization
 from methods.quantization.int8_sq import INT8SQQuantization
 from methods.pruning.random import RandomPruning
 from methods.pruning.l2 import L2StructuredPruning
+
+# 配置全局日志
+logger = logging.getLogger(__name__)
+
+def setup_logging(run_dir):
+    """
+    配置日志系统：同时输出到控制台和文件
+    """
+    log_path = os.path.join(run_dir, "run.log")
+    
+    # 设置日志格式
+    formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    
+    # 文件处理器
+    file_handler = logging.FileHandler(log_path, encoding='utf-8')
+    file_handler.setFormatter(formatter)
+    file_handler.setLevel(logging.INFO)
+    
+    # 控制台处理器
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setFormatter(formatter)
+    console_handler.setLevel(logging.INFO)
+    
+    # 配置根日志记录器
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.INFO)
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    
+    logger.info(f"Logging initialized. Log file: {log_path}")
 
 def parse_args():
     parser = argparse.ArgumentParser(description="AutoLLM-Compressor: 自动化大模型压缩工具")
@@ -107,16 +139,21 @@ def generate_performance_plot(original_ppl, final_ppl, best_config, save_path):
     plt.savefig(save_path, dpi=300)
     plt.close()
 
-def save_results(args, original_ppl, final_ppl, best_config, final_model=None, tokenizer=None):
-    # 1. 创建基于时间戳的独立运行目录
-    timestamp = time.strftime("%Y%m%d-%H%M%S")
-    run_dir_name = f"result_{timestamp}"
-    base_result_dir = "./results"
-    run_dir = os.path.join(base_result_dir, run_dir_name)
-    
-    if not os.path.exists(run_dir):
-        os.makedirs(run_dir)
-        
+def save_results(args, original_ppl, final_ppl, best_config, final_model=None, tokenizer=None, run_dir=None, picture_dir=None):
+    # 如果未传入目录（兼容旧调用），则在此创建
+    if run_dir is None:
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        run_dir_name = f"result_{timestamp}"
+        base_result_dir = "./results"
+        run_dir = os.path.join(base_result_dir, run_dir_name)
+        if not os.path.exists(run_dir):
+            os.makedirs(run_dir)
+            
+    if picture_dir is None:
+        picture_dir = os.path.join(run_dir, "picture")
+        if not os.path.exists(picture_dir):
+            os.makedirs(picture_dir)
+            
     # 2. 保存 JSON 报告
     report_filename = "report.json"
     report_path = os.path.join(run_dir, report_filename)
@@ -125,7 +162,7 @@ def save_results(args, original_ppl, final_ppl, best_config, final_model=None, t
     search_history = best_config.pop("search_history", []) if best_config else []
     
     report = {
-        "timestamp": timestamp,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
         "model_path": args.model_path,
         "strategy": args.strategy,
         "target_ratio": args.target_ratio,
@@ -140,9 +177,9 @@ def save_results(args, original_ppl, final_ppl, best_config, final_model=None, t
     try:
         with open(report_path, 'w', encoding='utf-8') as f:
             json.dump(report, f, indent=4, ensure_ascii=False)
-        print(f"\n✅ JSON Report saved to: {report_path}")
+        logger.info(f"JSON Report saved to: {report_path}")
     except Exception as e:
-        print(f"❌ Failed to save JSON report: {e}")
+        logger.error(f"Failed to save JSON report: {e}")
 
     # 3. 生成搜索历史 CSV 报告 (可选，方便分析)
     if search_history:
@@ -156,42 +193,43 @@ def save_results(args, original_ppl, final_ppl, best_config, final_model=None, t
                     config_str = json.dumps(item["config"], ensure_ascii=False).replace('"', '""')
                     line = f"{item['type']},\"{config_str}\",{item['ratio']:.4f},{item['ppl']:.4f}\n"
                     f.write(line)
-            print(f"✅ Search History CSV saved to: {csv_path}")
+            logger.info(f"Search History CSV saved to: {csv_path}")
         except Exception as e:
-            print(f"❌ Failed to save CSV history: {e}")
+            logger.error(f"Failed to save CSV history: {e}")
 
     # 4. 生成可视化图表
     if HAS_MATPLOTLIB:
-        plot_path = os.path.join(run_dir, "performance_analysis.png")
+        # 修改: 保存到 picture 目录
+        plot_path = os.path.join(picture_dir, "performance_analysis.png")
         try:
             generate_performance_plot(original_ppl, final_ppl, best_config, plot_path)
-            print(f"✅ Visualization saved to: {plot_path}")
+            logger.info(f"Visualization saved to: {plot_path}")
             
             # 额外：生成搜索历史散点图 (Pareto Frontier)
             if search_history:
-                history_plot_path = os.path.join(run_dir, "search_space_analysis.png")
+                history_plot_path = os.path.join(picture_dir, "search_space_analysis.png")
                 generate_search_history_plot(search_history, original_ppl, target_ratio=args.target_ratio, save_path=history_plot_path)
-                print(f"✅ Search Space Visualization saved to: {history_plot_path}")
+                logger.info(f"Search Space Visualization saved to: {history_plot_path}")
                 
         except Exception as e:
-            print(f"❌ Failed to generate plot: {e}")
+            logger.error(f"Failed to generate plot: {e}")
     else:
-        print("\n⚠️ Matplotlib not installed. Skipping visualization.")
-        print("Tip: Run `pip install matplotlib` to enable charts.")
+        logger.warning("Matplotlib not installed. Skipping visualization.")
+        logger.warning("Tip: Run `pip install matplotlib` to enable charts.")
     
     # 5. 保存模型 (如果用户指定)
     if args.save_to_local and final_model and tokenizer:
         model_save_dir = os.path.join(run_dir, "model")
-        print(f"\nSaving compressed model to: {model_save_dir}...")
+        logger.info(f"Saving compressed model to: {model_save_dir}...")
         try:
             if not os.path.exists(model_save_dir):
                 os.makedirs(model_save_dir)
             
             final_model.save_pretrained(model_save_dir)
             tokenizer.save_pretrained(model_save_dir)
-            print(f"✅ Compressed model saved successfully.")
+            logger.info(f"Compressed model saved successfully.")
         except Exception as e:
-            print(f"❌ Failed to save compressed model: {e}")
+            logger.error(f"Failed to save compressed model: {e}")
 
 def generate_search_history_plot(history, original_ppl, target_ratio, save_path):
     """
@@ -293,27 +331,43 @@ def load_model(model_name_or_path, device):
 
 def main():
     args = parse_args()
+    
+    # 0. 提前创建目录以供日志使用
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    run_dir_name = f"result_{timestamp}"
+    base_result_dir = "./results"
+    run_dir = os.path.join(base_result_dir, run_dir_name)
+    picture_dir = os.path.join(run_dir, "picture")
+    
+    if not os.path.exists(run_dir):
+        os.makedirs(run_dir)
+    if not os.path.exists(picture_dir):
+        os.makedirs(picture_dir)
+        
+    # 1. 初始化日志
+    setup_logging(run_dir)
+    
     device = get_device(args)
     
-    print(f"=== AutoLLM-Compressor Project Started ===")
-    print(f"Arguments: {vars(args)}")
-    print(f"Using Device: {device}")
+    logger.info(f"=== AutoLLM-Compressor Project Started ===")
+    logger.info(f"Arguments: {vars(args)}")
+    logger.info(f"Using Device: {device}")
     
-    # 1. 加载模型 (严格本地模式)
+    # 2. 加载模型 (严格本地模式)
     model = load_model(args.model_path, device)
     model.to(device)
 
-    # 1.5 加载 Tokenizer (严格本地模式)
-    print(f"Loading tokenizer from: {args.model_path}")
+    # 3. 加载 Tokenizer (严格本地模式)
+    logger.info(f"Loading tokenizer from: {args.model_path}")
     try:
         tokenizer = AutoTokenizer.from_pretrained(args.model_path, trust_remote_code=True, local_files_only=True)
     except Exception as e:
-        print(f"\n❌ Failed to load local tokenizer from {args.model_path}")
-        print(f"Error: {e}")
+        logger.error(f"Failed to load local tokenizer from {args.model_path}")
+        logger.error(f"Error: {e}")
         sys.exit(1)
 
-    # 2. 准备数据
-    print("Preparing calibration data...")
+    # 4. 准备数据
+    logger.info("Preparing calibration data...")
     try:
         dataset = get_calib_dataset(
             data_name="wikitext2", 
@@ -323,31 +377,31 @@ def main():
             data_path=args.data_path
         )
     except FileNotFoundError as e:
-        print(f"\n❌ CRITICAL ERROR: {e}")
+        logger.critical(f"{e}")
         sys.exit(1)
     except Exception as e:
-        print(f"\n❌ Unexpected error loading data: {e}")
+        logger.error(f"Unexpected error loading data: {e}")
         sys.exit(1)
     
     dataset = [d.to(device) for d in dataset]
 
-    # 3. 初始化评估器
+    # 5. 初始化评估器
     evaluator = Evaluator(dataset, device=device)
     
-    # 4. 评估原始模型
-    print("\n--- Evaluating Original Model ---")
+    # 6. 评估原始模型
+    logger.info("--- Evaluating Original Model ---")
     try:
         original_ppl = evaluator.evaluate_perplexity(model)
-        print(f"Original PPL: {original_ppl:.4f}")
+        logger.info(f"Original PPL: {original_ppl:.4f}")
     except Exception as e:
-        print(f"Evaluation failed: {e}")
+        logger.error(f"Evaluation failed: {e}")
         original_ppl = float('inf')
     
-    # 5. 初始化搜索引擎
+    # 7. 初始化搜索引擎
     engine = SearchEngine(search_strategy=args.strategy, evaluator=evaluator)
     
-    # 6. 开始自动搜索
-    print("\n--- Starting Automatic Search ---")
+    # 8. 开始自动搜索
+    logger.info("--- Starting Automatic Search ---")
     
     # 变更: 传递 target_ratio 约束
     constraints = {
@@ -356,24 +410,25 @@ def main():
     }
     best_config = engine.search(model, constraints)
     
-    print(f"\nBest Configuration Found: {best_config}")
+    logger.info(f"Best Configuration Found: {best_config}")
     
-    # 7. 使用最佳配置执行最终压缩
-    print("\n--- Applying Best Compression ---")
+    # 9. 使用最佳配置执行最终压缩
+    logger.info("--- Applying Best Compression ---")
     compressor = Compressor()
     final_model = compressor.run(model, best_config)
     
-    # 8. 最终评估
-    print("\n--- Evaluating Compressed Model ---")
+    # 10. 最终评估
+    logger.info("--- Evaluating Compressed Model ---")
     final_ppl = evaluator.evaluate_perplexity(final_model)
     
-    print(f"\n=== Final Report ===")
-    print(f"Original PPL: {original_ppl:.4f}")
-    print(f"Final PPL:    {final_ppl:.4f}")
-    print(f"Best Config:  {best_config}")
+    logger.info("=== Final Report ===")
+    logger.info(f"Original PPL: {original_ppl:.4f}")
+    logger.info(f"Final PPL:    {final_ppl:.4f}")
+    logger.info(f"Best Config:  {best_config}")
 
-    # 9. 保存结果
-    save_results(args, original_ppl, final_ppl, best_config, final_model, tokenizer)
+    # 11. 保存结果 (传入已创建的目录路径，避免重复创建逻辑)
+    # 重构 save_results 以接受 run_dir 和 picture_dir
+    save_results(args, original_ppl, final_ppl, best_config, final_model, tokenizer, run_dir, picture_dir)
 
 if __name__ == "__main__":
     main()
