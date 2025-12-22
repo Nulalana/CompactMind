@@ -39,6 +39,7 @@ def parse_args():
     parser.add_argument("--target_ratio", type=float, default=0.5, help="目标压缩比 (0.0-1.0)")
     parser.add_argument("--data_samples", type=int, default=10, help="校准数据样本数量")
     parser.add_argument("--data_path", type=str, default=None, help="外部数据集路径（如 wikitext2 的 test.txt）")
+    parser.add_argument("--save_to_local", action="store_true", help="是否保存压缩后的模型")
     
     # 修改: 显式支持 --cpu 和 --gpu，且默认使用 cpu (除非有 gpu 且没指定 cpu)
     # 为了实现“默认 CPU”但又允许“自动检测”，我们使用互斥组
@@ -105,10 +106,10 @@ def generate_performance_plot(original_ppl, final_ppl, best_config, save_path):
     plt.savefig(save_path, dpi=300)
     plt.close()
 
-def save_results(args, original_ppl, final_ppl, best_config):
+def save_results(args, original_ppl, final_ppl, best_config, final_model=None, tokenizer=None):
     # 1. 创建基于时间戳的独立运行目录
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    run_dir_name = f"run_{timestamp}"
+    run_dir_name = f"result_{timestamp}"
     base_result_dir = "./results"
     run_dir = os.path.join(base_result_dir, run_dir_name)
     
@@ -176,6 +177,20 @@ def save_results(args, original_ppl, final_ppl, best_config):
     else:
         print("\n⚠️ Matplotlib not installed. Skipping visualization.")
         print("Tip: Run `pip install matplotlib` to enable charts.")
+    
+    # 5. 保存模型 (如果用户指定)
+    if args.save_to_local and final_model and tokenizer:
+        model_save_dir = os.path.join(run_dir, "model")
+        print(f"\nSaving compressed model to: {model_save_dir}...")
+        try:
+            if not os.path.exists(model_save_dir):
+                os.makedirs(model_save_dir)
+            
+            final_model.save_pretrained(model_save_dir)
+            tokenizer.save_pretrained(model_save_dir)
+            print(f"✅ Compressed model saved successfully.")
+        except Exception as e:
+            print(f"❌ Failed to save compressed model: {e}")
 
 def generate_search_history_plot(history, original_ppl, target_ratio, save_path):
     """
@@ -329,7 +344,7 @@ def main():
     print(f"Best Config:  {best_config}")
 
     # 9. 保存结果
-    save_results(args, original_ppl, final_ppl, best_config)
+    save_results(args, original_ppl, final_ppl, best_config, final_model, tokenizer)
 
 if __name__ == "__main__":
     main()
