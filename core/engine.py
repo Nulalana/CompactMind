@@ -20,11 +20,8 @@ class SearchEngine:
     def search(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
         """
         根据约束条件搜索最佳压缩方案。
-        constraints: 包含 'target_ratio' (float)
         """
         print(f"Starting search with strategy: {self.search_strategy}")
-        target_ratio = constraints.get("target_ratio", 1.0)
-        print(f"Target Compression Ratio: <= {target_ratio}")
         
         if self.search_strategy == "bayesian":
             return self._search_bayesian(model, constraints)
@@ -33,7 +30,6 @@ class SearchEngine:
         return self._search_grid(model, constraints)
 
     def _search_bayesian(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
-        target_ratio = constraints.get("target_ratio", 1.0)
         n_trials = constraints.get("n_trials", 30)
         user_enable_retrain = constraints.get("enable_retrain", True) # 获取用户开关
         
@@ -162,8 +158,6 @@ class SearchEngine:
         return best_config
 
     def _search_grid(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
-        target_ratio = constraints.get("target_ratio", 1.0)
-
         best_score = float('inf') # PPL 越低越好
         best_config = None
         
@@ -191,8 +185,8 @@ class SearchEngine:
                 
                 estimated_ratio = self._estimate_compression_ratio(method_name, current_params)
                 
-                if estimated_ratio > target_ratio:
-                    print(f"  [Skip] {config['method']} {config['params']} (Ratio {estimated_ratio:.2f} > {target_ratio})")
+                if estimated_ratio > 1.0: # 仅过滤完全无效的（压缩比>1即变大了）
+                    print(f"  [Skip] {config['method']} {config['params']} (Ratio {estimated_ratio:.2f} > 1.0)")
                     continue
                 
                 score = self._evaluate_candidate(model, config)
@@ -276,8 +270,8 @@ class SearchEngine:
                 pipeline_param_str = str(pipeline_params)
                 
                 # 筛选
-                if total_ratio > target_ratio:
-                    print(f"  [Skip] Pipeline {pipeline_name} {pipeline_param_str} (Ratio {total_ratio:.2f} > {target_ratio})")
+                if total_ratio > 1.0: # 仅过滤完全无效的
+                    print(f"  [Skip] Pipeline {pipeline_name} {pipeline_param_str} (Ratio {total_ratio:.2f} > 1.0)")
                     continue
                 
                 # 评估

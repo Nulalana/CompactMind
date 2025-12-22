@@ -26,7 +26,7 @@ from core.engine import SearchEngine
 from core.compressor import Compressor
 from core.evaluator import Evaluator
 from utils.data_loader import get_calib_dataset
-from utils.visualization import generate_performance_plot, generate_search_history_plot
+from utils.plotter import generate_performance_plot, generate_search_history_plot
 from methods.quantization.fp16 import FP16Quantization
 from methods.quantization.int8_sq import INT8SQQuantization
 from methods.pruning.random import RandomPruning
@@ -103,6 +103,7 @@ def get_device(args):
         # 用户需求：默认 CPU
         return "cpu"
 
+def save_results(args, original_ppl, final_ppl, best_config, final_model, tokenizer, run_dir, picture_dir):
     if args.save_to_local and final_model and tokenizer:
         model_save_dir = os.path.join(run_dir, "model")
         logger.info(f"Saving compressed model to: {model_save_dir}...")
@@ -116,169 +117,48 @@ def get_device(args):
         except Exception as e:
             logger.error(f"Failed to save compressed model: {e}")
 
-def generate_search_history_plot(history, original_ppl, target_ratio, save_path):
-    """
-    生成搜索空间分析图：压缩比 vs PPL，含 Pareto Frontier
-    自适应支持 Broken Axis (断轴) 或 Log Scale 展示
-    """
-    # 过滤掉 PPL 为 inf 的点
-    valid_history = [h for h in history if h['ppl'] != float('inf')]
-    if not valid_history:
-        print("No valid history to plot.")
-        return
+    search_history = best_config.get("search_history", [])
 
-    ratios = [h['ratio'] for h in valid_history]
-    ppls = [h['ppl'] for h in valid_history]
-    types = [h['type'] for h in valid_history]
-    
-    # === 自适应显示逻辑 ===
-    y_min, y_max = min(ppls), max(ppls)
-    sorted_ppls = np.sort(ppls)
-    diffs = np.diff(sorted_ppls)
-    
-    mode = 'linear'
-    break_params = None
-    
-    # 如果跨度极大 (> 2个数量级)，考虑优化显示
-    if y_max / (y_min + 1e-6) > 100 and len(ppls) > 1:
-        max_gap_idx = np.argmax(diffs)
-        max_gap = diffs[max_gap_idx]
-        gap_start = sorted_ppls[max_gap_idx]
-        gap_end = sorted_ppls[max_gap_idx+1]
-        
-        # 如果最大空白占据了 > 60% 的线性空间，使用断轴 (Broken Axis)
-        if max_gap > 0.6 * (y_max - y_min):
-            mode = 'broken'
-            # 留出一些余量
-            margin_bottom = (gap_start - y_min) * 0.2 if gap_start > y_min else 1.0
-            margin_top = (y_max - gap_end) * 0.2
+    report = {
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "model_path": args.model_path,
+        "strategy": args.strategy,
+        "data_samples": args.data_samples,
+        "original_ppl": original_ppl,
+        "final_ppl": final_ppl,
+        "ppl_change": final_ppl - original_ppl,
+        "best_config": best_config,
+        "search_history": search_history # 新增：保存所有搜索记录
+    }
+
+    report_path = os.path.join(run_dir, "report.json")
+    try:
+        with open(report_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=4, ensure_ascii=False, default=str)
+        logger.info(f"Report saved to {report_path}")
+    except Exception as e:
+        logger.error(f"Failed to save report: {e}")
+
+    # 4. 生成可视化图表
+    if HAS_MATPLOTLIB:
+        # 修改: 保存到 picture 目录
+        plot_path = os.path.join(picture_dir, "performance_analysis.png")
+        try:
+            generate_performance_plot(original_ppl, final_ppl, best_config, plot_path)
+            logger.info(f"Visualization saved to: {plot_path}")
             
-            # 底部区间 [min - margin, gap_start + margin]
-            # 顶部区间 [gap_end - margin, max + margin]
-            ylim_bottom = (max(0, y_min - margin_bottom), gap_start + margin_bottom)
-            ylim_top = (gap_end - margin_top, y_max + margin_top)
-            break_params = (ylim_top, ylim_bottom)
-        else:
-            # 否则使用对数坐标
-            mode = 'log'
-            
-    # === 创建画布 ===
-    if mode == 'broken':
-        # 创建两个子图，高度比 1:2 (假设低值区更重要，或者根据点分布决定？这里简单给低值区更多空间)
-        # 统计两边的点数
-        low_count = sum(1 for p in ppls if p <= break_params[1][1])
-        high_count = sum(1 for p in ppls if p >= break_params[0][0])
-        ratio_h = [1, 1] if high_count > low_count else [1, 2] 
-        
-        fig, (ax1, ax2) = plt.subplots(2, 1, sharex=True, figsize=(12, 8), 
-                                      gridspec_kw={'height_ratios': ratio_h})
-        fig.subplots_adjust(hspace=0.1)
-        axes_list = [ax1, ax2]
-        
-        # 设置坐标轴范围
-        ax1.set_ylim(*break_params[0])  # Top
-        ax2.set_ylim(*break_params[1])  # Bottom
-        
-        # 隐藏脊线制造断裂感
-        ax1.spines['bottom'].set_visible(False)
-        ax2.spines['top'].set_visible(False)
-        ax1.xaxis.tick_top()
-        ax1.tick_params(labeltop=False) 
-        ax2.xaxis.tick_bottom()
-        
-        # 添加波浪线/斜线
-        d = .015 
-        kwargs = dict(transform=ax1.transAxes, color='k', clip_on=False)
-        ax1.plot((-d, +d), (-d, +d), **kwargs)        # top-left diagonal
-        ax1.plot((1 - d, 1 + d), (-d, +d), **kwargs)  # top-right diagonal
-
-        kwargs.update(transform=ax2.transAxes) 
-        ax2.plot((-d, +d), (1 - d, 1 + d), **kwargs)  # bottom-left diagonal
-        ax2.plot((1 - d, 1 + d), (1 - d, 1 + d), **kwargs) # bottom-right diagonal
-
+            # 额外：生成搜索历史散点图 (Pareto Frontier)
+            if search_history:
+                history_plot_path = os.path.join(picture_dir, "search_space_analysis.png")
+                # 移除 target_ratio 参数
+                generate_search_history_plot(search_history, original_ppl, save_path=history_plot_path)
+                logger.info(f"Search Space Visualization saved to: {history_plot_path}")
+                
+        except Exception as e:
+            logger.error(f"Failed to generate plot: {e}")
     else:
-        fig, ax = plt.subplots(figsize=(12, 8))
-        axes_list = [ax]
-        if mode == 'log':
-            ax.set_yscale('log')
-
-    # === 绘图函数 ===
-    def draw_on_ax(ax):
-        # 1. 绘制散点
-        single_indices = [i for i, t in enumerate(types) if t == 'single']
-        pipeline_indices = [i for i, t in enumerate(types) if t == 'hybrid' or t == 'pipeline']
-        
-        if single_indices:
-            ax.scatter([ratios[i] for i in single_indices], [ppls[i] for i in single_indices], 
-                       c='blue', label='Single Method', alpha=0.6, s=80, marker='o', edgecolors='k')
-            
-        if pipeline_indices:
-            ax.scatter([ratios[i] for i in pipeline_indices], [ppls[i] for i in pipeline_indices], 
-                       c='red', label='Hybrid Method', alpha=0.6, s=100, marker='^', edgecolors='k')
-        
-        # 2. 绘制 Pareto Frontier
-        sorted_points = sorted(valid_history, key=lambda x: x['ratio'])
-        pareto_points = []
-        current_min_ppl = float('inf')
-        
-        for point in sorted_points:
-            if point['ppl'] < current_min_ppl:
-                pareto_points.append(point)
-                current_min_ppl = point['ppl']
-        
-        if pareto_points:
-            p_ratios = [p['ratio'] for p in pareto_points]
-            p_ppls = [p['ppl'] for p in pareto_points]
-            ax.plot(p_ratios, p_ppls, 'g--', linewidth=2, label='Pareto Frontier', alpha=0.8)
-            ax.scatter(p_ratios, p_ppls, c='gold', s=150, marker='*', zorder=10, label='Pareto Optimal')
-
-        # 辅助线
-        ax.axhline(y=original_ppl, color='green', linestyle=':', label='Original PPL')
-        ax.axvline(x=target_ratio, color='gray', linestyle='--', label='Target Ratio Limit')
-        
-        ax.grid(True, alpha=0.3)
-        
-        # 标注最佳点
-        if ppls:
-            best_idx = ppls.index(min(ppls))
-            best_x = ratios[best_idx]
-            best_y = ppls[best_idx]
-            # 只有当点在当前坐标轴范围内时才标注，防止标注飞出
-            ylim = ax.get_ylim()
-            if ylim[0] <= best_y <= ylim[1]:
-                ax.annotate('Best Found', xy=(best_x, best_y), xytext=(best_x, best_y*1.15),
-                            arrowprops=dict(facecolor='black', shrink=0.05),
-                            bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.8))
-
-    # === 执行绘图 ===
-    for ax in axes_list:
-        draw_on_ax(ax)
-        
-    # === 设置标题和标签 ===
-    if mode == 'broken':
-        # 统一 Legend (只在第一个图显示，去重)
-        handles, labels = axes_list[0].get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        axes_list[0].legend(by_label.values(), by_label.keys(), loc='upper right')
-        
-        axes_list[1].set_xlabel('Estimated Compression Ratio (Lower is More Compressed)')
-        axes_list[0].set_ylabel('Perplexity')
-        plt.suptitle('Search Space Analysis: Compression Ratio vs PPL (Broken Axis)', y=0.95)
-        
-    elif mode == 'log':
-        plt.xlabel('Estimated Compression Ratio (Lower is More Compressed)')
-        plt.ylabel('Perplexity (Log Scale)')
-        plt.title('Search Space Analysis: Compression Ratio vs PPL (Log Scale)')
-        plt.legend()
-    else:
-        plt.xlabel('Estimated Compression Ratio (Lower is More Compressed)')
-        plt.ylabel('Perplexity (Lower is Better)')
-        plt.title('Search Space Analysis: Compression Ratio vs PPL')
-        plt.legend()
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close()
+        logger.warning("Matplotlib not installed. Skipping visualization.")
+        logger.warning("Tip: Run `pip install matplotlib` to enable charts.")
 
 def load_model(model_name_or_path, device):
     print(f"Loading model from: {model_name_or_path}")
