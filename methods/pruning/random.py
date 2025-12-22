@@ -10,8 +10,14 @@ class RandomPruning(BaseCompressionMethod):
         sparsity = kwargs.get("sparsity", 0.5)
         print(f"Applying Random Pruning with sparsity: {sparsity}")
         
+        # 敏感层关键词列表
+        sensitive_keywords = ["lm_head", "embed_tokens", "wte", "wpe"]
+        
         # 遍历所有 Linear 层进行随机剪枝
         for name, module in model.named_modules():
+            if any(k in name for k in sensitive_keywords):
+                continue
+
             if isinstance(module, nn.Linear):
                 # 使用 PyTorch 内置的 random_unstructured 剪枝
                 prune.random_unstructured(module, name="weight", amount=sparsity)

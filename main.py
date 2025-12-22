@@ -195,45 +195,70 @@ def save_results(args, original_ppl, final_ppl, best_config, final_model=None, t
 
 def generate_search_history_plot(history, original_ppl, target_ratio, save_path):
     """
-    生成搜索空间分析图：压缩比 vs PPL
+    生成搜索空间分析图：压缩比 vs PPL，含 Pareto Frontier
     """
     plt.figure(figsize=(12, 8))
     
-    ratios = [h['ratio'] for h in history]
-    ppls = [h['ppl'] for h in history]
-    types = [h['type'] for h in history]
+    # 过滤掉 PPL 为 inf 的点
+    valid_history = [h for h in history if h['ppl'] != float('inf')]
+    if not valid_history:
+        print("No valid history to plot.")
+        return
+
+    ratios = [h['ratio'] for h in valid_history]
+    ppls = [h['ppl'] for h in valid_history]
+    types = [h['type'] for h in valid_history]
     
-    # 分类绘制
+    # 1. 绘制散点
     single_indices = [i for i, t in enumerate(types) if t == 'single']
     pipeline_indices = [i for i, t in enumerate(types) if t == 'hybrid' or t == 'pipeline']
     
     if single_indices:
         plt.scatter([ratios[i] for i in single_indices], [ppls[i] for i in single_indices], 
-                   c='blue', label='Single Method', alpha=0.7, s=100, marker='o')
+                   c='blue', label='Single Method', alpha=0.6, s=80, marker='o', edgecolors='k')
         
     if pipeline_indices:
         plt.scatter([ratios[i] for i in pipeline_indices], [ppls[i] for i in pipeline_indices], 
-                   c='red', label='Hybrid Method', alpha=0.7, s=100, marker='^')
+                   c='red', label='Hybrid Method', alpha=0.6, s=100, marker='^', edgecolors='k')
     
+    # 2. 计算并绘制 Pareto Frontier
+    # 按 ratio 排序
+    sorted_points = sorted(valid_history, key=lambda x: x['ratio'])
+    pareto_points = []
+    current_min_ppl = float('inf')
+    
+    for point in sorted_points:
+        if point['ppl'] < current_min_ppl:
+            pareto_points.append(point)
+            current_min_ppl = point['ppl']
+    
+    if pareto_points:
+        p_ratios = [p['ratio'] for p in pareto_points]
+        p_ppls = [p['ppl'] for p in pareto_points]
+        plt.plot(p_ratios, p_ppls, 'g--', linewidth=2, label='Pareto Frontier', alpha=0.8)
+        # 高亮 Pareto 点
+        plt.scatter(p_ratios, p_ppls, c='gold', s=150, marker='*', zorder=10, label='Pareto Optimal')
+
     # 绘制原始基准线
-    plt.axhline(y=original_ppl, color='green', linestyle='--', label='Original PPL')
-    plt.text(min(ratios) if ratios else 0.5, original_ppl, 'Original PPL', va='bottom', color='green')
+    plt.axhline(y=original_ppl, color='green', linestyle=':', label='Original PPL')
     
     # 绘制目标压缩比线
     plt.axvline(x=target_ratio, color='gray', linestyle='--', label='Target Ratio Limit')
     
     plt.xlabel('Estimated Compression Ratio (Lower is More Compressed)')
     plt.ylabel('Perplexity (Lower is Better)')
-    plt.title('Search Space Analysis: Compression Ratio vs PPL')
+    plt.title('Search Space Analysis: Compression Ratio vs PPL (Pareto Frontier)')
     plt.legend()
     plt.grid(True, alpha=0.3)
     
     # 标注最佳点
-    best_idx = ppls.index(min(ppls))
-    best_x = ratios[best_idx]
-    best_y = ppls[best_idx]
-    plt.annotate('Best Config', xy=(best_x, best_y), xytext=(best_x, best_y*1.1),
-                arrowprops=dict(facecolor='black', shrink=0.05))
+    if ppls:
+        best_idx = ppls.index(min(ppls))
+        best_x = ratios[best_idx]
+        best_y = ppls[best_idx]
+        plt.annotate('Best Found', xy=(best_x, best_y), xytext=(best_x, best_y*1.15),
+                    arrowprops=dict(facecolor='black', shrink=0.05),
+                    bbox=dict(boxstyle="round,pad=0.3", fc="white", ec="black", alpha=0.8))
     
     plt.tight_layout()
     plt.savefig(save_path, dpi=300)

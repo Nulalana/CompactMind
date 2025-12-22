@@ -10,7 +10,15 @@ class L2StructuredPruning(BaseCompressionMethod):
         sparsity = kwargs.get("sparsity", 0.5)
         print(f"Applying L2 Structured Pruning with sparsity: {sparsity}")
         
+        # 敏感层关键词列表，避免剪枝这些层
+        sensitive_keywords = ["lm_head", "embed_tokens", "wte", "wpe"]
+        
         for name, module in model.named_modules():
+            # 检查是否为敏感层
+            if any(k in name for k in sensitive_keywords):
+                # print(f"  Skipping sensitive layer: {name}")
+                continue
+
             if isinstance(module, nn.Linear):
                 # 结构化剪枝：按 L2 范数剪掉整行 (dim=0) 或 整列 (dim=1)
                 # 这里我们剪掉输出维度 (dim=0)，相当于剪掉神经元

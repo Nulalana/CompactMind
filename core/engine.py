@@ -51,6 +51,7 @@ class SearchEngine:
 
         def objective(trial):
             # 1. 决定是单方法还是混合方法
+            # 增加 hybrid 的权重，或者让 Optuna 自己学
             mode = trial.suggest_categorical("mode", ["single", "hybrid"])
             
             config = {}
@@ -69,45 +70,68 @@ class SearchEngine:
                 estimated_ratio = self._estimate_compression_ratio(method_name, params)
                 
             else: # hybrid
-                # 简化逻辑：尝试 Quant -> Prune 或 Prune -> Quant
-                # 先选两个具体方法
+                # 策略升级: 强制顺序 Pruning -> Quantization (先剪枝后量化效果通常更好)
+                # 并智能过滤无效的 sparsity 参数
+                
                 q_method = trial.suggest_categorical("hybrid_q_method", quant_methods)
                 p_method = trial.suggest_categorical("hybrid_p_method", prune_methods)
                 
-                # 决定顺序
-                order = trial.suggest_categorical("hybrid_order", ["qp", "pq"])
-                
-                # 采样参数
+                # 1. 采样量化参数
                 q_params = {}
                 q_space = methods_info[q_method].get("search_space", {})
                 for p_name, p_vals in q_space.items():
                     q_params[p_name] = trial.suggest_categorical(f"hybrid_{q_method}_{p_name}", p_vals)
                 
+                q_ratio = self._estimate_compression_ratio(q_method, q_params)
+                
+                # 2. 计算需要的最小剪枝稀疏度
+                # target >= q_ratio * (1 - sparsity)
+                # 1 - sparsity <= target / q_ratio
+                # sparsity >= 1 - (target / q_ratio)
+                min_sparsity = 1.0 - (target_ratio / q_ratio)
+                if min_sparsity < 0: 
+                    min_sparsity = 0.0
+
+                # 3. 采样剪枝参数 (带过滤)
                 p_params = {}
                 p_space = methods_info[p_method].get("search_space", {})
-                for p_name, p_vals in p_space.items():
-                    p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
                 
-                # 组装 pipeline (内部实现仍用 pipeline 列表结构)
-                if order == "qp":
-                    pipeline_list = [
-                        {"method": q_method, "params": q_params},
-                        {"method": p_method, "params": p_params}
-                    ]
+                if "sparsity" in p_space:
+                    available_sparsities = p_space["sparsity"]
+                    # 过滤掉肯定不达标的 sparsity
+                    valid_sparsities = [s for s in available_sparsities if s >= min_sparsity - 0.05] # 留一点点容错
+                    
+                    if not valid_sparsities:
+                        # 如果没有合法的，就选最大的尝试
+                        valid_sparsities = [max(available_sparsities)]
+                    
+                    selected_sparsity = trial.suggest_categorical(f"hybrid_{p_method}_sparsity", valid_sparsities)
+                    p_params["sparsity"] = selected_sparsity
+                    
+                    # 其他参数
+                    for p_name, p_vals in p_space.items():
+                        if p_name != "sparsity":
+                            p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
                 else:
-                    pipeline_list = [
-                        {"method": p_method, "params": p_params},
-                        {"method": q_method, "params": q_params}
-                    ]
+                    for p_name, p_vals in p_space.items():
+                        p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
+                
+                # 组装 pipeline: Prune -> Quant
+                pipeline_list = [
+                    {"method": p_method, "params": p_params},
+                    {"method": q_method, "params": q_params}
+                ]
                 
                 config = {"pipeline": pipeline_list}
-                r1 = self._estimate_compression_ratio(q_method, q_params)
-                r2 = self._estimate_compression_ratio(p_method, p_params)
+                r1 = self._estimate_compression_ratio(p_method, p_params)
+                r2 = self._estimate_compression_ratio(q_method, q_params)
                 estimated_ratio = r1 * r2
 
             # 检查约束
             if estimated_ratio > target_ratio:
-                return float('inf')
+                # 稍微放宽一点点，避免浮点误差，但总体要严格
+                if estimated_ratio > target_ratio * 1.05:
+                    return float('inf')
 
             # 评估 PPL
             score = self._evaluate_candidate(model, config)
