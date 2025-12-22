@@ -35,6 +35,7 @@ class SearchEngine:
     def _search_bayesian(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
         target_ratio = constraints.get("target_ratio", 1.0)
         n_trials = constraints.get("n_trials", 30)
+        force_retrain = constraints.get("retrain", True)
         
         # 准备元数据
         methods_info = {}
@@ -95,8 +96,12 @@ class SearchEngine:
                 retrain_config = None
                 
                 if retrain_methods:
-                    # 简单策略：让 Optuna 决定是否开启
-                    enable_retrain = trial.suggest_categorical("enable_retrain", [True, False])
+                    # 策略升级: 使用命令行参数控制是否开启
+                    # 如果 force_retrain 为 True，则总是开启；否则让 Optuna 决定
+                    if force_retrain:
+                        enable_retrain = True
+                    else:
+                        enable_retrain = trial.suggest_categorical("enable_retrain", [True, False])
                     
                     if enable_retrain:
                         r_method = retrain_methods[0] # 默认取第一个 (finetuning)
@@ -111,9 +116,9 @@ class SearchEngine:
                 r_q = self._estimate_compression_ratio(q_method, q_params)
                 estimated_ratio = r_p * r_q
                 
-                # 约束检查
-                if estimated_ratio > target_ratio * 1.05: # 稍微放宽
-                     return float('inf')
+                # 约束检查 (用户请求移除: 总是允许评估，以便在CSV中看到所有点)
+                # if estimated_ratio > target_ratio * 1.05: # 稍微放宽
+                #      return float('inf')
                 
                 # 5. 组装 Pipeline
                 pipeline_list = [{"method": p_method, "params": p_params}]
