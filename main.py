@@ -30,6 +30,7 @@ from methods.quantization.fp16 import FP16Quantization
 from methods.quantization.int8_sq import INT8SQQuantization
 from methods.pruning.random import RandomPruning
 from methods.pruning.l2 import L2StructuredPruning
+from methods.retraining.finetuning import CausalLMFinetuning
 
 # 配置全局日志
 logger = logging.getLogger(__name__)

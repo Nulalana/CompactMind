@@ -45,6 +45,7 @@ class SearchEngine:
             
         quant_methods = [m for m in self.available_methods if methods_info[m].get("type") == "quantization"]
         prune_methods = [m for m in self.available_methods if methods_info[m].get("type") == "pruning"]
+        retrain_methods = [m for m in self.available_methods if methods_info[m].get("type") == "retraining"]
         
         search_history = []
         best_config_container = {"config": None, "score": float('inf')}
@@ -70,65 +71,59 @@ class SearchEngine:
                 estimated_ratio = self._estimate_compression_ratio(method_name, params)
                 
             else: # hybrid
-                # 策略升级: 强制顺序 Pruning -> Quantization (先剪枝后量化效果通常更好)
-                # 并智能过滤无效的 sparsity 参数
+                # 策略升级: Pruning -> [Optional Retraining] -> Quantization
                 
-                q_method = trial.suggest_categorical("hybrid_q_method", quant_methods)
+                # 1. 采样 Pruning 方法
                 p_method = trial.suggest_categorical("hybrid_p_method", prune_methods)
+                p_params = {}
+                p_space = methods_info[p_method].get("search_space", {})
                 
-                # 1. 采样量化参数
+                # 采样剪枝参数 (暂时全量采样，后续check)
+                for p_name, p_vals in p_space.items():
+                    p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
+                
+                # 2. 采样 Quantization 方法
+                q_method = trial.suggest_categorical("hybrid_q_method", quant_methods)
                 q_params = {}
                 q_space = methods_info[q_method].get("search_space", {})
                 for p_name, p_vals in q_space.items():
                     q_params[p_name] = trial.suggest_categorical(f"hybrid_{q_method}_{p_name}", p_vals)
                 
-                q_ratio = self._estimate_compression_ratio(q_method, q_params)
+                # 3. 决定是否 Retraining
+                # 如果有可用 retraining 方法，且 pruning sparsity 较高，则大概率开启
+                enable_retrain = False
+                retrain_config = None
                 
-                # 2. 计算需要的最小剪枝稀疏度
-                # target >= q_ratio * (1 - sparsity)
-                # 1 - sparsity <= target / q_ratio
-                # sparsity >= 1 - (target / q_ratio)
-                min_sparsity = 1.0 - (target_ratio / q_ratio)
-                if min_sparsity < 0: 
-                    min_sparsity = 0.0
-
-                # 3. 采样剪枝参数 (带过滤)
-                p_params = {}
-                p_space = methods_info[p_method].get("search_space", {})
-                
-                if "sparsity" in p_space:
-                    available_sparsities = p_space["sparsity"]
-                    # 注意：Optuna 不允许动态更改同一参数的候选集合
-                    # 因此始终用完整候选集合采样，然后根据约束剪枝该 trial
-                    selected_sparsity = trial.suggest_categorical(f"hybrid_{p_method}_sparsity", available_sparsities)
-                    if selected_sparsity < min_sparsity:
-                        raise optuna.TrialPruned(f"sparsity {selected_sparsity} below required minimum {min_sparsity:.3f} for target_ratio")
-                    p_params["sparsity"] = selected_sparsity
+                if retrain_methods:
+                    # 简单策略：让 Optuna 决定是否开启
+                    enable_retrain = trial.suggest_categorical("enable_retrain", [True, False])
                     
-                    # 其他参数保持静态候选集合
-                    for p_name, p_vals in p_space.items():
-                        if p_name != "sparsity":
-                            p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
-                else:
-                    for p_name, p_vals in p_space.items():
-                        p_params[p_name] = trial.suggest_categorical(f"hybrid_{p_method}_{p_name}", p_vals)
+                    if enable_retrain:
+                        r_method = retrain_methods[0] # 默认取第一个 (finetuning)
+                        r_space = methods_info[r_method].get("search_space", {})
+                        r_params = {}
+                        for p_name, p_vals in r_space.items():
+                            r_params[p_name] = trial.suggest_categorical(f"hybrid_{r_method}_{p_name}", p_vals)
+                        retrain_config = {"method": r_method, "params": r_params}
+
+                # 4. 计算总压缩比并过滤
+                r_p = self._estimate_compression_ratio(p_method, p_params)
+                r_q = self._estimate_compression_ratio(q_method, q_params)
+                estimated_ratio = r_p * r_q
                 
-                # 组装 pipeline: Prune -> Quant
-                pipeline_list = [
-                    {"method": p_method, "params": p_params},
-                    {"method": q_method, "params": q_params}
-                ]
+                # 约束检查
+                if estimated_ratio > target_ratio * 1.05: # 稍微放宽
+                     return float('inf')
+                
+                # 5. 组装 Pipeline
+                pipeline_list = [{"method": p_method, "params": p_params}]
+                if retrain_config:
+                    pipeline_list.append(retrain_config)
+                pipeline_list.append({"method": q_method, "params": q_params})
                 
                 config = {"pipeline": pipeline_list}
-                r1 = self._estimate_compression_ratio(p_method, p_params)
-                r2 = self._estimate_compression_ratio(q_method, q_params)
-                estimated_ratio = r1 * r2
 
-            # 检查约束
-            if estimated_ratio > target_ratio:
-                # 稍微放宽一点点，避免浮点误差，但总体要严格
-                if estimated_ratio > target_ratio * 1.05:
-                    return float('inf')
+            # 评估 PPL
 
             # 评估 PPL
             score = self._evaluate_candidate(model, config)
@@ -339,7 +334,7 @@ class SearchEngine:
         compressor = Compressor()
         try:
             # 2. 就地执行压缩（注意：compressor 需要支持就地修改）
-            compressed_model = compressor.run(model, config)
+            compressed_model = compressor.run(model, config, dataset=self.evaluator.dataset if self.evaluator else None)
             
             if self.evaluator:
                 return self.evaluator.evaluate_perplexity(compressed_model)
