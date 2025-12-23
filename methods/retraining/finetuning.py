@@ -24,7 +24,7 @@ class CausalLMFinetuning(BaseCompressionMethod):
         # 我们需要将其包装成 DataLoader
         # 如果 epochs 是小数（如 0.5），我们只迭代部分数据
         
-        batch_size = 4 # 保持较小以节省显存
+        batch_size = 1 # 显存优化：默认设为 1，确保 7B 模型能跑通
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
         total_steps = len(data_loader)
@@ -89,6 +89,10 @@ class CausalLMFinetuning(BaseCompressionMethod):
             else:
                 # 兼容不同格式
                 input_ids = batch[0].to(device) if isinstance(batch, (list, tuple)) else batch.to(device)
+
+            # 维度修正：如果 DataLoader 堆叠出了 (B, 1, seq_len)，需要 squeeze 掉第 1 维
+            if input_ids.dim() == 3 and input_ids.size(1) == 1:
+                input_ids = input_ids.squeeze(1)
 
             # 前向传播 (Causal LM loss)
             outputs = model(input_ids, labels=input_ids)
