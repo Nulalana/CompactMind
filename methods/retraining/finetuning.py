@@ -41,9 +41,22 @@ class CausalLMFinetuning(BaseCompressionMethod):
             print("No trainable parameters found. Skipping finetuning.")
             return model
             
-        optimizer = torch.optim.AdamW(trainable_params, lr=learning_rate)
+        # 显存优化：开启梯度检查点 (Gradient Checkpointing)
+        if hasattr(model, "gradient_checkpointing_enable"):
+            print("Enabling gradient checkpointing to save memory...")
+            model.gradient_checkpointing_enable()
+            # 必须设置 use_cache=False 才能配合 checkpointing
+            if hasattr(model.config, "use_cache"):
+                model.config.use_cache = False
+
+        # 显存优化：使用 SGD 代替 AdamW
+        # AdamW 需要维护 2 个状态量 (exp_avg, exp_avg_sq)，显存占用是模型参数的 2-3 倍
+        # SGD 无状态，极其节省显存
+        print("Using SGD optimizer to save memory (AdamW is too heavy for full finetuning)...")
+        optimizer = torch.optim.SGD(trainable_params, lr=learning_rate)
         
         # 3. 训练循环
+        torch.cuda.empty_cache() # 训练前清理显存
         model.train()
         device = next(model.parameters()).device
         
@@ -96,6 +109,11 @@ class CausalLMFinetuning(BaseCompressionMethod):
         
         # 恢复为 eval 模式
         model.eval()
+        # 恢复 use_cache
+        if hasattr(model.config, "use_cache"):
+            model.config.use_cache = True
+            
+        torch.cuda.empty_cache() # 训练后清理
         return model
 
     def get_info(self):

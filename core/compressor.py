@@ -17,11 +17,16 @@ class Compressor:
                 if "finetuning" in mname or "retraining" in mname:
                     params["dataset"] = dataset
                 
+                # 创建用于打印的参数副本，隐藏巨大的 dataset
+                print_params = params.copy()
+                if "dataset" in print_params:
+                    print_params["dataset"] = "<dataset_object>"
+
                 print(f"Initializing compression method: {mname}")
                 mclass = get_method(mname)
                 instance = mclass(params)
                 
-                print("Executing compression step...")
+                print(f"Executing compression step with params: {print_params}")
                 model = instance.apply(model, **params)
             return model
         else:
@@ -33,11 +38,16 @@ class Compressor:
             if method_name and ("finetuning" in method_name or "retraining" in method_name):
                 params["dataset"] = dataset
             
+            # 创建用于打印的参数副本
+            print_params = params.copy()
+            if "dataset" in print_params:
+                print_params["dataset"] = "<dataset_object>"
+
             print(f"Initializing compression method: {method_name}")
             method_class = get_method(method_name)
             compressor_instance = method_class(params)
             
-            print("Executing compression...")
+            print(f"Executing compression with params: {print_params}")
             compressed_model = compressor_instance.apply(model, **params)
             
             return compressed_model
