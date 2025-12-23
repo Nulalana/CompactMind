@@ -201,9 +201,13 @@ def run_worker(rank, world_size, args, run_dir, picture_dir, storage_url, study_
     # 设置当前进程可见的 GPU
     # 如果有多张卡，rank 对应 GPU ID
     if args.gpu and torch.cuda.device_count() > 1:
+        # 子进程不需要重新设置 CUDA_VISIBLE_DEVICES，因为在 Process 启动前还没初始化 CUDA
+        # 但是在 spawn 模式下，子进程是全新的，所以需要确保它只看到指定的 GPU
+        # 注意：在 spawn 模式下，os.environ 的修改会传递给子进程，但如果在主进程改了，可能会影响其他。
+        # 最好的方式是在子进程一开始就设置。
         os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
-        # 在子进程中需要重新初始化 CUDA 环境上下文，但 Python 多进程会自动处理
-        device = "cuda" # 子进程看到的始终是 cuda:0 (因为设置了 CUDA_VISIBLE_DEVICES)
+        # 强制 device 为 cuda:0 (因为对子进程来说，它只有这一张卡)
+        device = "cuda:0" 
     else:
         # 单卡或 CPU 模式
         device = get_device(args)
@@ -313,6 +317,9 @@ def main():
         
         logger.info(f"Optuna Storage: {storage_url}")
         
+        # 必须设置 spawn 启动方式，否则 CUDA 初始化会报错
+        multiprocessing.set_start_method("spawn", force=True)
+        
         # 启动多进程 Workers
         processes = []
         for rank in range(gpu_count):
@@ -345,10 +352,17 @@ def main():
         evaluator = Evaluator(dataset, device=device)
         
         # 从 Storage 中读取最佳 Study
-        import optuna
-        study = optuna.load_study(study_name=study_name, storage=storage_url)
-        logger.info(f"Best params found in study: {study.best_params}")
-        logger.info(f"Best value (PPL): {study.best_value}")
+         import optuna
+         try:
+             study = optuna.load_study(study_name=study_name, storage=storage_url)
+             logger.info(f"Best params found in study: {study.best_params}")
+             logger.info(f"Best value (PPL): {study.best_value}")
+         except KeyError:
+             logger.error("Study not found in storage. It seems all workers failed.")
+             sys.exit(1)
+         except Exception as e:
+             logger.error(f"Failed to load study: {e}")
+             sys.exit(1)
         
         # 重构最佳配置
         # 注意：Optuna 存储的是扁平的 params，我们需要将其转换回 config 字典
