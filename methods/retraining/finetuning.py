@@ -35,6 +35,34 @@ class CausalLMFinetuning(BaseCompressionMethod):
         print(f"Total steps in dataset: {total_steps}. Target steps for this run: {target_steps}")
 
         # 2. 准备优化器
+        # 显存优化：只微调最后几层 (Lightweight Finetuning)
+        # 全量微调 7B 模型需要 >28GB 显存 (权重14G + 梯度14G)，单卡 24G 无法承受
+        print("Freezing most parameters for memory efficiency...")
+        for param in model.parameters():
+            param.requires_grad = False
+            
+        # 尝试解冻最后 2 层 Transformer Block
+        layers = None
+        if hasattr(model, "model") and hasattr(model.model, "layers"):
+            layers = model.model.layers
+        elif hasattr(model, "layers"):
+            layers = model.layers
+        elif hasattr(model, "transformer") and hasattr(model.transformer, "h"): # GPT-2 style
+            layers = model.transformer.h
+            
+        n_layers_to_tune = 2
+        if layers is not None and len(layers) > 0:
+            print(f"Unfreezing last {n_layers_to_tune} layers...")
+            for layer in layers[-n_layers_to_tune:]:
+                for param in layer.parameters():
+                    param.requires_grad = True
+        
+        # 解冻 LM Head
+        if hasattr(model, "lm_head"):
+            print("Unfreezing lm_head...")
+            for param in model.lm_head.parameters():
+                param.requires_grad = True
+
         # 只训练 float 类型的参数，跳过已量化的参数（如果有）
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         if not trainable_params:
