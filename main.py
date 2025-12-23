@@ -314,7 +314,10 @@ def main():
         logger.info(f"🚀 Detected {gpu_count} GPUs. Enabling Parallel Bayesian Search!")
         
         # 释放主进程加载的模型以节省显存，留给子进程使用
-        del model
+        # 注意：在 main 函数开头我们并没有加载 model，所以这里直接清理 CUDA 缓存即可
+        # 如果之前逻辑改动导致 model 被加载了，则需要 del
+        # 当前逻辑下，model 加载在 else 分支里，所以这里 model 未定义是正常的
+        
         torch.cuda.empty_cache()
         logger.info("Cleared main process model to free up GPU memory for workers.")
         
