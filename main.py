@@ -26,7 +26,7 @@ from core.engine import SearchEngine
 from core.compressor import Compressor
 from core.evaluator import Evaluator
 from utils.data_loader import get_calib_dataset
-from utils.plotter import generate_performance_plot, generate_search_history_plot
+from utils.plotter import generate_performance_plot, generate_search_history_plot, generate_interactive_search_history_plot
 from methods.quantization.fp16 import FP16Quantization
 from methods.quantization.int8_sq import INT8SQQuantization
 from methods.pruning.random import RandomPruning
@@ -153,6 +153,11 @@ def save_results(args, original_ppl, final_ppl, best_config, final_model, tokeni
                 # 移除 target_ratio 参数
                 generate_search_history_plot(search_history, original_ppl, save_path=history_plot_path)
                 logger.info(f"Search Space Visualization saved to: {history_plot_path}")
+
+                # 新增：生成交互式 HTML 图表
+                interactive_plot_path = os.path.join(picture_dir, "search_space_analysis.html")
+                generate_interactive_search_history_plot(search_history, original_ppl, save_path=interactive_plot_path)
+
                 
         except Exception as e:
             logger.error(f"Failed to generate plot: {e}")

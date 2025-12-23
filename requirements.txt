@@ -6,3 +6,5 @@ scipy
 numpy
 tqdm
 optuna
+matplotlib
+plotly

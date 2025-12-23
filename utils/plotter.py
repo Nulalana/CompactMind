@@ -2,6 +2,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import os
 import logging
+import json
+try:
+    import plotly.graph_objects as go
+    HAS_PLOTLY = True
+except ImportError:
+    HAS_PLOTLY = False
 
 logger = logging.getLogger(__name__)
 
@@ -179,8 +185,6 @@ def generate_search_history_plot(history, original_ppl, save_path):
 
             # 辅助线
             ax.axhline(y=original_ppl, color='green', linestyle=':', label='Original PPL')
-            # 移除 target_ratio 线
-            # ax.axvline(x=target_ratio, color='gray', linestyle='--', label='Target Ratio Limit')
             
             ax.grid(True, alpha=0.3)
             
@@ -227,3 +231,100 @@ def generate_search_history_plot(history, original_ppl, save_path):
         plt.close()
     except Exception as e:
         logger.error(f"Failed to generate search history plot: {e}")
+
+def generate_interactive_search_history_plot(history, original_ppl, save_path):
+    """
+    使用 Plotly 生成可交互的搜索空间分析图 (.html)
+    """
+    if not HAS_PLOTLY:
+        logger.warning("Plotly is not installed. Skipping interactive plot generation.")
+        return
+
+    try:
+        valid_history = [h for h in history if h['ppl'] != float('inf')]
+        if not valid_history:
+            return
+
+        # 准备数据
+        ratios = [h['ratio'] for h in valid_history]
+        ppls = [h['ppl'] for h in valid_history]
+        types = [h['type'] for h in valid_history]
+        configs = [json.dumps(h['config'], indent=2) for h in valid_history]
+
+        # 分类
+        single_mask = [t == 'single' for t in types]
+        hybrid_mask = [t != 'single' for t in types]
+
+        fig = go.Figure()
+
+        # 1. 单一方法点
+        if any(single_mask):
+            fig.add_trace(go.Scatter(
+                x=[r for r, m in zip(ratios, single_mask) if m],
+                y=[p for p, m in zip(ppls, single_mask) if m],
+                mode='markers',
+                name='Single Method',
+                marker=dict(size=10, color='blue', symbol='circle'),
+                text=[c for c, m in zip(configs, single_mask) if m],
+                hovertemplate="<b>Ratio</b>: %{x:.4f}<br><b>PPL</b>: %{y:.4f}<br><pre>%{text}</pre>"
+            ))
+
+        # 2. 混合方法点
+        if any(hybrid_mask):
+            fig.add_trace(go.Scatter(
+                x=[r for r, m in zip(ratios, hybrid_mask) if m],
+                y=[p for p, m in zip(ppls, hybrid_mask) if m],
+                mode='markers',
+                name='Hybrid Method',
+                marker=dict(size=12, color='red', symbol='triangle-up'),
+                text=[c for c, m in zip(configs, hybrid_mask) if m],
+                hovertemplate="<b>Ratio</b>: %{x:.4f}<br><b>PPL</b>: %{y:.4f}<br><pre>%{text}</pre>"
+            ))
+
+        # 3. Pareto Frontier
+        sorted_points = sorted(valid_history, key=lambda x: x['ratio'])
+        pareto_points = []
+        current_min_ppl = float('inf')
+        for point in sorted_points:
+            if point['ppl'] < current_min_ppl:
+                pareto_points.append(point)
+                current_min_ppl = point['ppl']
+        
+        if pareto_points:
+            p_ratios = [p['ratio'] for p in pareto_points]
+            p_ppls = [p['ppl'] for p in pareto_points]
+            p_configs = [json.dumps(p['config'], indent=2) for p in pareto_points]
+            
+            fig.add_trace(go.Scatter(
+                x=p_ratios,
+                y=p_ppls,
+                mode='lines+markers',
+                name='Pareto Frontier',
+                line=dict(color='green', dash='dash'),
+                marker=dict(symbol='star', size=14, color='gold'),
+                text=p_configs,
+                hovertemplate="<b>Pareto Point</b><br>Ratio: %{x:.4f}<br>PPL: %{y:.4f}<br><pre>%{text}</pre>"
+            ))
+
+        # 4. 原始 PPL 参考线
+        fig.add_hline(y=original_ppl, line_dash="dot", line_color="green", annotation_text="Original PPL")
+
+        # 布局设置
+        fig.update_layout(
+            title="Interactive Search Space Analysis (Zoom/Pan enabled)",
+            xaxis_title="Estimated Compression Ratio (Lower is More Compressed)",
+            yaxis_title="Perplexity (Lower is Better)",
+            template="plotly_white",
+            hoverlabel=dict(
+                bgcolor="white",
+                font_size=12,
+                font_family="monospace" # 使用等宽字体显示 JSON
+            )
+        )
+
+        # 保存为 HTML
+        fig.write_html(save_path)
+        logger.info(f"Interactive plot saved to {save_path}")
+
+    except Exception as e:
+        logger.error(f"Failed to generate interactive plot: {e}")
