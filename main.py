@@ -179,6 +179,7 @@ def load_model(model_name_or_path, device):
         dtype = torch.float16 if "cuda" in device else torch.float32
         
         # 强制 local_files_only=True，严禁联网
+        # 显存优化：避免初始加载占用过多
         model = AutoModelForCausalLM.from_pretrained(
             model_name_or_path,
             torch_dtype=dtype,
@@ -186,7 +187,8 @@ def load_model(model_name_or_path, device):
             trust_remote_code=True,
             local_files_only=True 
         )
-        print(f"Successfully loaded {model.__class__.__name__}")
+        # 不要在这里 to(device)，让调用者决定何时移动，避免双倍显存占用
+        # print(f"Successfully loaded {model.__class__.__name__}")
         return model
     except Exception as e:
         print(f"\n❌ Failed to load local model: {e}")
@@ -207,6 +209,7 @@ def run_worker(rank, world_size, args, run_dir, picture_dir, storage_url, study_
         # 最好的方式是在子进程一开始就设置。
         os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
         # 强制 device 为 cuda:0 (因为对子进程来说，它只有这一张卡)
+        # 修正：当 CUDA_VISIBLE_DEVICES=rank 时，Python 看到的设备 ID 是 0
         device = "cuda:0" 
     else:
         # 单卡或 CPU 模式
@@ -309,6 +312,11 @@ def main():
     
     if use_parallel:
         logger.info(f"🚀 Detected {gpu_count} GPUs. Enabling Parallel Bayesian Search!")
+        
+        # 释放主进程加载的模型以节省显存，留给子进程使用
+        del model
+        torch.cuda.empty_cache()
+        logger.info("Cleared main process model to free up GPU memory for workers.")
         
         # 准备 Optuna Storage (SQLite)
         db_path = os.path.join(run_dir, "optuna.db")
