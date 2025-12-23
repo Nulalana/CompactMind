@@ -352,17 +352,17 @@ def main():
         evaluator = Evaluator(dataset, device=device)
         
         # 从 Storage 中读取最佳 Study
-         import optuna
-         try:
-             study = optuna.load_study(study_name=study_name, storage=storage_url)
-             logger.info(f"Best params found in study: {study.best_params}")
-             logger.info(f"Best value (PPL): {study.best_value}")
-         except KeyError:
-             logger.error("Study not found in storage. It seems all workers failed.")
-             sys.exit(1)
-         except Exception as e:
-             logger.error(f"Failed to load study: {e}")
-             sys.exit(1)
+        import optuna
+        try:
+            study = optuna.load_study(study_name=study_name, storage=storage_url)
+            logger.info(f"Best params found in study: {study.best_params}")
+            logger.info(f"Best value (PPL): {study.best_value}")
+        except KeyError:
+            logger.error("Study not found in storage. It seems all workers failed.")
+            sys.exit(1)
+        except Exception as e:
+            logger.error(f"Failed to load study: {e}")
+            sys.exit(1)
         
         # 重构最佳配置
         # 注意：Optuna 存储的是扁平的 params，我们需要将其转换回 config 字典
