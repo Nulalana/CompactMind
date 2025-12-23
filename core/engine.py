@@ -34,6 +34,8 @@ class SearchEngine:
     def _search_bayesian(self, model: nn.Module, constraints: Dict[str, Any]) -> Dict[str, Any]:
         n_trials = constraints.get("n_trials", 30)
         user_enable_retrain = constraints.get("enable_retrain", True) # 获取用户开关
+        study_name = constraints.get("study_name", "autollm_study")
+        storage = constraints.get("storage", None)
         
         # 准备元数据
         methods_info = {}
@@ -139,6 +141,9 @@ class SearchEngine:
                 "type": mode
             })
             
+            # 将 config 存入 trial.user_attrs 以便主进程恢复
+            trial.set_user_attr("config", config)
+            
             if score < best_config_container["score"]:
                 best_config_container["score"] = score
                 best_config_container["config"] = config
@@ -147,7 +152,13 @@ class SearchEngine:
 
         # 创建 Study
         optuna.logging.set_verbosity(optuna.logging.WARNING)
-        study = optuna.create_study(direction="minimize")
+        # 支持并行搜索：如果提供了 storage，则 load_if_exists=True
+        study = optuna.create_study(
+            direction="minimize",
+            study_name=study_name,
+            storage=storage,
+            load_if_exists=True
+        )
         print(f"Starting Bayesian Optimization with {n_trials} trials...")
         study.optimize(objective, n_trials=n_trials)
         
