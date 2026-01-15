@@ -8,6 +8,8 @@ from core.evaluator import Evaluator
 
 import optuna
 
+import traceback
+
 class SearchEngine:
     """
     搜索引擎核心：负责在搜索空间中寻找最佳压缩配置。
@@ -341,6 +343,7 @@ class SearchEngine:
                 return 0.0
         except Exception as e:
             print(f"Evaluation failed for {config}: {e}")
+            traceback.print_exc()
             return float('inf')
         finally:
             # 3. 恢复原始权重，确保不影响后续搜索

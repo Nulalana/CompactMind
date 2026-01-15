@@ -24,7 +24,7 @@ class CausalLMFinetuning(BaseCompressionMethod):
         # 我们需要将其包装成 DataLoader
         # 如果 epochs 是小数（如 0.5），我们只迭代部分数据
         
-        batch_size = 4 # 保持较小以节省显存
+        batch_size = 1 # 显存优化：默认设为 1，确保 7B 模型能跑通
         data_loader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
         
         total_steps = len(data_loader)
@@ -35,6 +35,34 @@ class CausalLMFinetuning(BaseCompressionMethod):
         print(f"Total steps in dataset: {total_steps}. Target steps for this run: {target_steps}")
 
         # 2. 准备优化器
+        # 显存优化：只微调最后几层 (Lightweight Finetuning)
+        # 全量微调 7B 模型需要 >28GB 显存 (权重14G + 梯度14G)，单卡 24G 无法承受
+        print("Freezing most parameters for memory efficiency...")
+        for param in model.parameters():
+            param.requires_grad = False
+            
+        # 尝试解冻最后 2 层 Transformer Block
+        layers = None
+        if hasattr(model, "model") and hasattr(model.model, "layers"):
+            layers = model.model.layers
+        elif hasattr(model, "layers"):
+            layers = model.layers
+        elif hasattr(model, "transformer") and hasattr(model.transformer, "h"): # GPT-2 style
+            layers = model.transformer.h
+            
+        n_layers_to_tune = 2
+        if layers is not None and len(layers) > 0:
+            print(f"Unfreezing last {n_layers_to_tune} layers...")
+            for layer in layers[-n_layers_to_tune:]:
+                for param in layer.parameters():
+                    param.requires_grad = True
+        
+        # 解冻 LM Head
+        if hasattr(model, "lm_head"):
+            print("Unfreezing lm_head...")
+            for param in model.lm_head.parameters():
+                param.requires_grad = True
+
         # 只训练 float 类型的参数，跳过已量化的参数（如果有）
         trainable_params = [p for p in model.parameters() if p.requires_grad]
         if not trainable_params:
@@ -89,6 +117,10 @@ class CausalLMFinetuning(BaseCompressionMethod):
             else:
                 # 兼容不同格式
                 input_ids = batch[0].to(device) if isinstance(batch, (list, tuple)) else batch.to(device)
+
+            # 维度修正：如果 DataLoader 堆叠出了 (B, 1, seq_len)，需要 squeeze 掉第 1 维
+            if input_ids.dim() == 3 and input_ids.size(1) == 1:
+                input_ids = input_ids.squeeze(1)
 
             # 前向传播 (Causal LM loss)
             outputs = model(input_ids, labels=input_ids)
