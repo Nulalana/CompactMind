@@ -71,5 +71,3 @@ AutoLLM-Compressor/
 3.  使用 `@register_method("your_method_name")` 装饰器注册。
 4.  在对应的 `__init__.py` 中导入即可。
 
----
-维护者：CompactMind Team
